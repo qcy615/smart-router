@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from smart_router.config.worker import HealthConfig, CircuitBreakerConfig
 from smart_router.config.policy import PolicyConfig
+from smart_router.config.scheduler import SchedulerConfig
 from typing import List
 from argparse import Namespace
 
@@ -20,6 +21,7 @@ class SmartRouterConfig:
 
     prefill_policy_config: PolicyConfig = field(default_factory=PolicyConfig)
     decode_policy_config: PolicyConfig = field(default_factory=PolicyConfig)
+    scheduler_config: SchedulerConfig = field(default_factory=SchedulerConfig)
 
 def build_config(args: Namespace) -> SmartRouterConfig:
     """
@@ -59,4 +61,8 @@ def build_config(args: Namespace) -> SmartRouterConfig:
         decode_intra_dp_size=args.decode_intra_dp_size,
         decode_policy_config=decode_policy_config if decode_policy_config else policy_config,
         prefill_policy_config=prefill_policy_config if prefill_policy_config else policy_config,
+        scheduler_config=SchedulerConfig(
+            max_batch_size=getattr(args, "scheduler_max_batch_size", 1),
+            batch_wait_timeout_ms=getattr(args, "scheduler_batch_wait_timeout_ms", 0),
+        ),
     )

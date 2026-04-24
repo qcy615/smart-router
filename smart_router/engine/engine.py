@@ -3,10 +3,11 @@ import asyncio
 import zmq
 import zmq.asyncio
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 import json
 import platform
 
+from smart_router.config import SchedulerConfig
 from smart_router.engine.utils import make_zmq_socket
 from smart_router.worker import Worker, WorkerRegistry
 
@@ -64,9 +65,9 @@ class EngineRequest:
 @dataclass
 class EngineResponse:
     request_id: str
-    prefill_url: str
+    prefill_url: Optional[str]
     prefill_rank: int
-    decode_url: str
+    decode_url: Optional[str]
     decode_rank: int
 
     @classmethod
@@ -95,6 +96,7 @@ class Engine:
         self,
         input_socket_address: str,
         output_socket_address: str,
+        scheduler_config: Optional[SchedulerConfig] = None,
     ) -> None:
         # Initialize ZeroMQ context and sockets
         ctx = zmq.Context()
@@ -104,6 +106,7 @@ class Engine:
 
         # queues for scheduling
         self.waiting_queue: asyncio.Queue[EngineRequest] = asyncio.Queue()
+        self.scheduler_config = scheduler_config or SchedulerConfig()
 
         self.worker_registry: WorkerRegistry = WorkerRegistry()
 
@@ -129,22 +132,120 @@ class Engine:
 
     async def schedule_loop(self):
         while True:
-            request = await self.waiting_queue.get()
-            logger.debug(f"Processing prefill for request: {request.request_id}")
-            # schedule
-            prefill_worker = self.schedule_prefill(request.request_text, request.headers) 
-            prefill_worker.increment_load()    
-            decode_worker = self.schedule_decode(request.request_text, request.headers)
-            decode_worker.increment_load()
-            # build resp
-            resp = EngineResponse(
-                request_id=request.request_id,
-                prefill_url=prefill_worker.base_url(), 
-                prefill_rank=prefill_worker.dp_rank(),
-                decode_url=decode_worker.base_url(),
-                decode_rank=decode_worker.dp_rank(),
+            batch = await self._get_next_batch()
+            await self._schedule_batch(batch)
+
+    async def _schedule_batch(self, batch: List[EngineRequest]) -> None:
+        if not batch:
+            return
+
+        logger.debug(
+            "Processing schedule batch size=%s request_ids=%s",
+            len(batch),
+            [request.request_id for request in batch],
+        )
+
+        prefill_workers = self.schedule_prefill_batch(batch)
+        decode_workers = self.schedule_decode_batch(batch)
+        workers_to_increment: List[Optional[Worker]] = []
+        response_pairs: List[tuple[EngineRequest, EngineResponse]] = []
+
+        for index, request in enumerate(batch):
+            prefill_worker = (
+                prefill_workers[index] if index < len(prefill_workers) else None
             )
+            decode_worker = decode_workers[index] if index < len(decode_workers) else None
+
+            # Scheduling is all-or-nothing for each request: only commit worker
+            # loads when both prefill and decode assignments are available.
+            if prefill_worker is not None and decode_worker is not None:
+                workers_to_increment.extend([prefill_worker, decode_worker])
+                resp = EngineResponse(
+                    request_id=request.request_id,
+                    prefill_url=self._worker_base_url(prefill_worker),
+                    prefill_rank=self._worker_dp_rank(prefill_worker),
+                    decode_url=self._worker_base_url(decode_worker),
+                    decode_rank=self._worker_dp_rank(decode_worker),
+                )
+            else:
+                logger.warning(
+                    "Unable to schedule request_id=%s prefill_assigned=%s decode_assigned=%s",
+                    request.request_id,
+                    prefill_worker is not None,
+                    decode_worker is not None,
+                )
+                resp = EngineResponse(
+                    request_id=request.request_id,
+                    prefill_url=None,
+                    prefill_rank=-1,
+                    decode_url=None,
+                    decode_rank=-1,
+                )
+
+            response_pairs.append((request, resp))
+
+        self._increment_worker_loads(workers_to_increment)
+
+        for request, resp in response_pairs:
             await self.send_response(request, resp.to_dict())
+            logger.debug(
+                "Sent schedule response request_id=%s prefill=%s decode=%s",
+                request.request_id,
+                resp.prefill_url,
+                resp.decode_url,
+            )
+
+    async def _get_next_batch(self) -> List[EngineRequest]:
+        max_batch_size = max(1, self.scheduler_config.max_batch_size)
+        timeout_secs = max(0, self.scheduler_config.batch_wait_timeout_ms) / 1000
+
+        first_request = await self.waiting_queue.get()
+        batch = [first_request]
+        if max_batch_size == 1:
+            return batch
+
+        deadline = asyncio.get_running_loop().time() + timeout_secs
+        while len(batch) < max_batch_size:
+            try:
+                batch.append(self.waiting_queue.get_nowait())
+                continue
+            except asyncio.QueueEmpty:
+                pass
+
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                break
+
+            try:
+                request = await asyncio.wait_for(
+                    self.waiting_queue.get(),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                break
+            batch.append(request)
+
+        return batch
+
+    def _increment_worker_loads(self, workers: List[Optional[Worker]]) -> None:
+        load_by_worker: Dict[Worker, int] = {}
+        for worker in workers:
+            if worker is None:
+                continue
+            load_by_worker[worker] = load_by_worker.get(worker, 0) + 1
+
+        for worker, load in load_by_worker.items():
+            worker.increment_load(load)
+
+    def _worker_base_url(self, worker: Optional[Worker]) -> Optional[str]:
+        if worker is None:
+            return None
+        return worker.base_url()
+
+    def _worker_dp_rank(self, worker: Optional[Worker]) -> int:
+        if worker is None:
+            return -1
+        return worker.dp_rank()
 
     async def send_response(self, request: EngineRequest, msg: Dict[str, Any]) -> None:
         await self.output_socket.send_multipart([
@@ -174,10 +275,36 @@ class Engine:
         # closesocket
         self.output_socket.close(0)
 
-    def schedule_prefill(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_prefill(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+    ) -> Optional[Worker]:
         raise NotImplementedError
     
-    def schedule_decode(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_decode(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+    ) -> Optional[Worker]:
         raise NotImplementedError
+
+    def schedule_prefill_batch(
+        self,
+        requests: List[EngineRequest],
+    ) -> List[Optional[Worker]]:
+        return [
+            self.schedule_prefill(request.request_text, request.headers)
+            for request in requests
+        ]
+
+    def schedule_decode_batch(
+        self,
+        requests: List[EngineRequest],
+    ) -> List[Optional[Worker]]:
+        return [
+            self.schedule_decode(request.request_text, request.headers)
+            for request in requests
+        ]
     
     

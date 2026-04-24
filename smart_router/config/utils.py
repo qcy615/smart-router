@@ -21,6 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-threshold", type=float, default=0.5, help="The cache threshold for prefix-aware policy for prefill.")
     parser.add_argument("--balance-abs-threshold", type=int, default=32, help="The absolute balance threshold for prefix-aware policy for prefill.")
     parser.add_argument("--balance-rel-threshold", type=float, default=0.1, help="The relative balance threshold for prefix-aware policy for prefill.")
+    parser.add_argument("--scheduler-max-batch-size", type=int, default=1, help="Maximum number of queued requests to schedule as one batch.")
+    parser.add_argument("--scheduler-batch-wait-timeout-ms", type=int, default=0, help="Maximum time to wait for a scheduling batch after the first request is dequeued.")
     
     parser.add_argument(
         "--router_type",

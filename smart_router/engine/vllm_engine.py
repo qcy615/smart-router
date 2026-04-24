@@ -1,12 +1,11 @@
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
-from smart_router.engine.engine import Engine
+from smart_router.engine.engine import Engine, EngineRequest
 from smart_router.config import SmartRouterConfig
-from smart_router.policies import Policy, get_policy_config
+from smart_router.policies import Policy, PolicyRequest, get_policy_config
 from smart_router.worker import BasicWorker, DPAwareWorker, Worker, WorkerRegistry, WorkerType
-from smart_router.engine.engine import Engine
 
 DECODE_URL_PLACEHOLDER = "DECODE_URL_PLACEHOLDER"
 
@@ -22,6 +21,7 @@ class VLLMEngine(Engine):
         super().__init__(
             input_socket_address=input_socket_address,
             output_socket_address=output_socket_address,
+            scheduler_config=config.scheduler_config,
         )
 
         self.config: SmartRouterConfig = config
@@ -64,19 +64,59 @@ class VLLMEngine(Engine):
         logger.info("registered workers: %s", self.worker_registry.get_all_urls())
 
     
-    def schedule_prefill(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_prefill(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+    ) -> Optional[Worker]:
         workers = self.worker_registry.get_healthy_by_type(WorkerType.PREFILL)
         prefill: Optional[Worker] = self.prefill_policy.select_worker(
             workers, request_text=request_text, headers=headers
         )
         return prefill
+
+    def schedule_prefill_batch(
+        self,
+        requests: List[EngineRequest],
+    ) -> List[Optional[Worker]]:
+        workers = self.worker_registry.get_healthy_by_type(WorkerType.PREFILL)
+        return self.prefill_policy.select_worker_batch(
+            workers,
+            self._to_policy_requests(requests),
+        )
     
-    def schedule_decode(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_decode(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+    ) -> Optional[Worker]:
         workers = self.worker_registry.get_healthy_by_type(WorkerType.DECODE)
         decode: Optional[Worker] = self.decode_policy.select_worker(
             workers, request_text=request_text, headers=headers
         )
         return decode
+
+    def schedule_decode_batch(
+        self,
+        requests: List[EngineRequest],
+    ) -> List[Optional[Worker]]:
+        workers = self.worker_registry.get_healthy_by_type(WorkerType.DECODE)
+        return self.decode_policy.select_worker_batch(
+            workers,
+            self._to_policy_requests(requests),
+        )
+
+    def _to_policy_requests(
+        self,
+        requests: List[EngineRequest],
+    ) -> List[PolicyRequest]:
+        return [
+            PolicyRequest(
+                request_text=request.request_text,
+                headers=request.headers,
+            )
+            for request in requests
+        ]
     
 def start_engine(config: SmartRouterConfig, input_addr: str, output_addr: str) -> None:
     engine = VLLMEngine(

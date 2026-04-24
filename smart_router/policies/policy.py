@@ -1,20 +1,42 @@
-import logging 
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
+
 from smart_router.worker import Worker
 from smart_router.config.policy import PolicyConfig
+
+
+@dataclass
+class PolicyRequest:
+    request_text: str = ""
+    headers: Dict[str, str] = field(default_factory=dict)
 
 
 class Policy(ABC):
 
     @abstractmethod
-    def name(self) -> str:
-        return "round_robin"
-
-    @abstractmethod
     def select_worker(self, workers: List[Worker], *args) -> Optional[Worker]:
         """Select a worker from the list of available workers."""
         raise NotImplementedError("select_worker method must be implemented by subclasses")
+
+    def select_worker_batch(
+        self,
+        workers: List[Worker],
+        requests: List[PolicyRequest],
+    ) -> List[Optional[Worker]]:
+        """Select workers for a batch of requests.
+
+        Policies that do not need batch-specific behavior can rely on this
+        compatibility fallback.
+        """
+        return [
+            self.select_worker(
+                workers,
+                request_text=request.request_text,
+                headers=request.headers,
+            )
+            for request in requests
+        ]
     
     @abstractmethod
     def name(self) -> str:
