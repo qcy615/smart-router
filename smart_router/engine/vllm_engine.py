@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 
 from smart_router.engine.engine import Engine, EngineRequest
 from smart_router.config import SmartRouterConfig
+from smart_router.logger import init_logging
 from smart_router.policies import Policy, PolicyRequest, get_policy_config
 from smart_router.worker import BasicWorker, DPAwareWorker, Worker, WorkerRegistry, WorkerType
 
@@ -118,7 +119,13 @@ class VLLMEngine(Engine):
             for request in requests
         ]
     
-def start_engine(config: SmartRouterConfig, input_addr: str, output_addr: str) -> None:
+def start_engine(
+    config: SmartRouterConfig,
+    input_addr: str,
+    output_addr: str,
+    log_level: str = "INFO",
+) -> None:
+    init_logging(log_level)
     engine = VLLMEngine(
         config,
         input_socket_address=input_addr,

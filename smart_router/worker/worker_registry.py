@@ -74,8 +74,11 @@ class WorkerRegistry:
     def get_healthy_by_type(self, worker_type: WorkerType) -> List[Worker]:
         with self._lock:
             worker_ids = self._type_workers.get(worker_type, [])
-            # return [self._workers[id] for id in worker_ids if id in self._workers and self._workers[id].is_healthy()]
-            return [self._workers[id] for id in worker_ids if id in self._workers]
+            return [
+                self._workers[id]
+                for id in worker_ids
+                if id in self._workers and self._workers[id].is_available()
+            ]
 
     def get_all(self) -> List[Worker]:
         """Get all workers."""

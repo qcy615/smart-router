@@ -218,10 +218,22 @@ class VllmRoutes:
         # send request to engine using engine_client
         fut: asyncio.Future = await request.app.state.engine_client.send_request(engine_request)
         try:
-            resp: EngineResponse = await asyncio.wait_for(fut, timeout=5.0)
+            schedule_timeout_secs = getattr(
+                request.app.state,
+                "schedule_timeout_secs",
+                5.0,
+            )
+            resp: EngineResponse = await asyncio.wait_for(
+                fut,
+                timeout=schedule_timeout_secs,
+            )
 
         except asyncio.TimeoutError:
-            logger.error("time out for get schedule result")
+            logger.error(
+                "time out for get schedule result request_id=%s timeout_secs=%.3f",
+                engine_request.request_id,
+                schedule_timeout_secs,
+            )
             return JSONResponse("time out for selecting workers", status_code=503)
         
         prefill_url, prefill_rank = resp.prefill_url, resp.prefill_rank
@@ -244,6 +256,7 @@ class VllmRoutes:
         )
 
         prefill_response: httpx.Response | None = None
+        prefill_started = time.monotonic()
         try:
             prefill_body = self._get_prefill_body(body)
             prefill_headers = self._get_prefill_headers(headers, request_id, prefill_rank)
@@ -265,7 +278,12 @@ class VllmRoutes:
                 headers=prefill_headers,
             )
         finally:
-            await self._decrement_worker(request, prefill_url, prefill_rank)
+            await self._decrement_worker(
+                request,
+                prefill_url,
+                prefill_rank,
+                forward_time_ms=(time.monotonic() - prefill_started) * 1000,
+            )
             logger.debug("vLLM Stage1 Prefill finish id=%s", request_id)
 
         if not prefill_response.is_success:
@@ -278,13 +296,20 @@ class VllmRoutes:
             "prefill_response": prefill_response,
         }
     
-    async def _decrement_worker(self, request: Request, url: str, rank: int):
+    async def _decrement_worker(
+        self,
+        request: Request,
+        url: str,
+        rank: int,
+        forward_time_ms: float | None = None,
+    ):
         engine_request = EngineRequest(
             request_id=uuid.uuid4().hex,
             identity=request.app.state.engine_client.identity,
             request_type=RequestType.RELEASE,
             worker_rank=rank,
             worker_url=url,
+            forward_time_ms=forward_time_ms,
         )
         await  request.app.state.engine_client.send_request(engine_request)
         
@@ -339,7 +364,11 @@ class VllmRoutes:
                 headers=decode_headers,
             )
         finally:
-            await self._decrement_worker(request, decode_url, decode_rank)
+            await self._decrement_worker(
+                request,
+                decode_url,
+                decode_rank,
+            )
             logger.debug("vLLM Stage2 Decode finish id=%s mode=non-stream", request_id)
 
         if not decode_response.is_success:
@@ -442,7 +471,11 @@ class VllmRoutes:
 
                         yield chunk
             finally:
-                await self._decrement_worker(request, decode_url, decode_rank)
+                await self._decrement_worker(
+                    request,
+                    decode_url,
+                    decode_rank,
+                )
                 logger.debug("vLLM Stage2 Decode finish id=%s mode=stream", request_id)
 
         return StreamingResponse(stream_response(), media_type="text/event-stream")

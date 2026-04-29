@@ -64,5 +64,14 @@ def build_config(args: Namespace) -> SmartRouterConfig:
         scheduler_config=SchedulerConfig(
             max_batch_size=getattr(args, "scheduler_max_batch_size", 1),
             batch_wait_timeout_ms=getattr(args, "scheduler_batch_wait_timeout_ms", 0),
+            schedule_response_timeout_ms=getattr(args, "scheduler_schedule_response_timeout_ms", 5000),
+            schedule_response_send_margin_ms=getattr(args, "scheduler_schedule_response_send_margin_ms", 1000),
+            adaptive_interval_enabled=getattr(args, "scheduler_adaptive_interval_enabled", False),
+            stats_window_size=getattr(args, "scheduler_stats_window_size", 16),
+            default_forward_time_ms=getattr(args, "scheduler_default_forward_time_ms", 100.0),
+            network_latency_ms=getattr(args, "scheduler_network_latency_ms", 0.0),
+            min_interval_ms=getattr(args, "scheduler_min_interval_ms", 0.0),
+            max_interval_ms=getattr(args, "scheduler_max_interval_ms", 1000.0),
+            watchdog_multiplier=getattr(args, "scheduler_watchdog_multiplier", 5.0),
         ),
     )

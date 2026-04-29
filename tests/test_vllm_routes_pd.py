@@ -170,6 +170,9 @@ def test_non_stream_chat_route_forwards_kv_params_and_releases_decode_worker():
         ("http://prefill", 0),
         ("http://decode", 1),
     ]
+    assert release_requests[0].forward_time_ms is not None
+    assert release_requests[0].forward_time_ms >= 0
+    assert release_requests[1].forward_time_ms is None
 
 
 def test_stream_request_forwards_kv_params_without_prompt_token_ids():
@@ -240,3 +243,6 @@ def test_stream_request_forwards_kv_params_without_prompt_token_ids():
         ("http://prefill", 0),
         ("http://decode", 1),
     ]
+    assert release_requests[0].forward_time_ms is not None
+    assert release_requests[0].forward_time_ms >= 0
+    assert release_requests[1].forward_time_ms is None

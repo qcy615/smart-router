@@ -9,13 +9,23 @@ from smart_router.engine.engine import Engine, EngineRequest, RequestType
 from smart_router.policies.policy import PolicyRequest
 from smart_router.policies.prefix_aware import PrefixAwarePolicy
 from smart_router.policies.prefix_tree import PrefixTree
+from smart_router.worker import WorkerType
 
 
 class FakeWorker:
-    def __init__(self, url: str, load: int = 0, rank: int = -1):
+    def __init__(
+        self,
+        url: str,
+        load: int = 0,
+        rank: int = -1,
+        worker_type: WorkerType = WorkerType.PREFILL,
+        available: bool = True,
+    ):
         self._url = url
         self._load = load
         self._rank = rank
+        self._worker_type = worker_type
+        self._available = available
         self.increment_calls = []
 
     def url(self) -> str:
@@ -33,6 +43,18 @@ class FakeWorker:
     def increment_load(self, load: int = 1) -> None:
         self.increment_calls.append(load)
         self._load += load
+
+    def decrement_load(self, load: int = 1) -> None:
+        self._load = max(0, self._load - load)
+
+    def worker_type(self) -> WorkerType:
+        return self._worker_type
+
+    def is_available(self) -> bool:
+        return self._available
+
+    def set_available(self, available: bool) -> None:
+        self._available = available
 
 
 class CountingPrefixTree(PrefixTree):
@@ -101,6 +123,9 @@ def test_scheduler_config_defaults_and_cli_overrides():
     )
     assert default_config.scheduler_config.max_batch_size == 1
     assert default_config.scheduler_config.batch_wait_timeout_ms == 0
+    assert default_config.scheduler_config.schedule_response_timeout_ms == 5000
+    assert default_config.scheduler_config.schedule_response_send_margin_ms == 1000
+    assert default_config.scheduler_config.adaptive_interval_enabled is False
 
     config = build_config(
         parser.parse_args(
@@ -113,11 +138,37 @@ def test_scheduler_config_defaults_and_cli_overrides():
                 "8",
                 "--scheduler-batch-wait-timeout-ms",
                 "25",
+                "--scheduler-schedule-response-timeout-ms",
+                "15000",
+                "--scheduler-schedule-response-send-margin-ms",
+                "1500",
+                "--scheduler-adaptive-interval-enabled",
+                "--scheduler-stats-window-size",
+                "4",
+                "--scheduler-default-forward-time-ms",
+                "80",
+                "--scheduler-network-latency-ms",
+                "5",
+                "--scheduler-min-interval-ms",
+                "2",
+                "--scheduler-max-interval-ms",
+                "200",
+                "--scheduler-watchdog-multiplier",
+                "3",
             ]
         )
     )
     assert config.scheduler_config.max_batch_size == 8
     assert config.scheduler_config.batch_wait_timeout_ms == 25
+    assert config.scheduler_config.schedule_response_timeout_ms == 15000
+    assert config.scheduler_config.schedule_response_send_margin_ms == 1500
+    assert config.scheduler_config.adaptive_interval_enabled is True
+    assert config.scheduler_config.stats_window_size == 4
+    assert config.scheduler_config.default_forward_time_ms == 80
+    assert config.scheduler_config.network_latency_ms == 5
+    assert config.scheduler_config.min_interval_ms == 2
+    assert config.scheduler_config.max_interval_ms == 200
+    assert config.scheduler_config.watchdog_multiplier == 3
 
 
 def test_prefix_tree_insert_many_matches_sequential_insert_and_ignores_unknown_tenant():
@@ -201,6 +252,143 @@ def test_get_next_batch_waits_within_fixed_time_window_for_more_requests():
         assert [request.request_id for request in batch] == ["req-1", "req-2"]
         assert elapsed < 0.5
         await task
+        await engine.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_adaptive_interval_uses_forward_samples_and_available_worker_counts():
+    async def run_test():
+        engine = _make_engine(
+            SchedulerConfig(
+                adaptive_interval_enabled=True,
+                default_forward_time_ms=100,
+                network_latency_ms=10,
+            )
+        )
+        prefill_a = FakeWorker("prefill-a", worker_type=WorkerType.PREFILL)
+        prefill_b = FakeWorker("prefill-b", worker_type=WorkerType.PREFILL)
+        decode = FakeWorker("decode", worker_type=WorkerType.DECODE)
+        engine.worker_registry.register(prefill_a)
+        engine.worker_registry.register(prefill_b)
+        engine.worker_registry.register(decode)
+
+        engine._record_forward_time(WorkerType.PREFILL, 40)
+        engine._record_forward_time(WorkerType.DECODE, 120)
+
+        assert round(engine._current_interval_secs, 3) == 0.130
+
+        decode.set_available(False)
+
+        assert round(engine._recompute_adaptive_interval_secs(), 3) == 0.025
+        await engine.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_adaptive_get_next_batch_dispatches_first_request_immediately_when_idle():
+    async def run_test():
+        engine = _make_engine(
+            SchedulerConfig(
+                max_batch_size=2,
+                adaptive_interval_enabled=True,
+                default_forward_time_ms=500,
+            )
+        )
+        engine.waiting_queue.put_nowait(_engine_request("req-1"))
+
+        started = time.monotonic()
+        batch = await engine._get_next_batch()
+        elapsed = time.monotonic() - started
+
+        assert [request.request_id for request in batch] == ["req-1"]
+        assert elapsed < 0.05
+        await engine.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_adaptive_get_next_batch_waits_for_interval_only():
+    async def run_test():
+        engine = _make_engine(
+            SchedulerConfig(
+                max_batch_size=2,
+                adaptive_interval_enabled=True,
+                default_forward_time_ms=50,
+            )
+        )
+        worker = FakeWorker("prefill-a", load=1, worker_type=WorkerType.PREFILL)
+        engine.worker_registry.register(worker)
+        loop = asyncio.get_running_loop()
+        engine._last_dispatch_time = loop.time()
+        engine._watchdog_deadline = loop.time() + 1
+        engine.waiting_queue.put_nowait(_engine_request("req-1"))
+        engine.waiting_queue.put_nowait(_engine_request("req-2"))
+
+        started = time.monotonic()
+        batch = await engine._get_next_batch()
+        elapsed = time.monotonic() - started
+
+        assert [request.request_id for request in batch] == ["req-1", "req-2"]
+        assert elapsed >= 0.035
+        assert engine._ready_event.is_set() is False
+        await engine.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_adaptive_get_next_batch_uses_watchdog_when_release_is_missing():
+    async def run_test():
+        engine = _make_engine(
+            SchedulerConfig(
+                adaptive_interval_enabled=True,
+                default_forward_time_ms=20,
+                watchdog_multiplier=1,
+            )
+        )
+        worker = FakeWorker("prefill-a", load=1, worker_type=WorkerType.PREFILL)
+        engine.worker_registry.register(worker)
+        loop = asyncio.get_running_loop()
+        engine._last_dispatch_time = loop.time()
+        engine._watchdog_deadline = engine._last_dispatch_time + 0.02
+        engine.waiting_queue.put_nowait(_engine_request("req-1"))
+
+        started = time.monotonic()
+        batch = await engine._get_next_batch()
+        elapsed = time.monotonic() - started
+
+        assert [request.request_id for request in batch] == ["req-1"]
+        assert 0.015 <= elapsed < 0.2
+        await engine.shutdown()
+
+    asyncio.run(run_test())
+
+
+def test_adaptive_get_next_batch_forces_dispatch_before_schedule_timeout():
+    async def run_test():
+        engine = _make_engine(
+            SchedulerConfig(
+                adaptive_interval_enabled=True,
+                default_forward_time_ms=1000,
+                schedule_response_timeout_ms=100,
+                schedule_response_send_margin_ms=10,
+            )
+        )
+        worker = FakeWorker("prefill-a", load=1, worker_type=WorkerType.PREFILL)
+        engine.worker_registry.register(worker)
+        loop = asyncio.get_running_loop()
+        engine._last_dispatch_time = loop.time()
+        engine._watchdog_deadline = engine._last_dispatch_time + 10
+        request = _engine_request("req-1")
+        request.enqueue_time = loop.time() - 0.2
+        engine.waiting_queue.put_nowait(request)
+
+        started = time.monotonic()
+        batch = await engine._get_next_batch()
+        elapsed = time.monotonic() - started
+
+        assert [request.request_id for request in batch] == ["req-1"]
+        assert elapsed < 0.05
         await engine.shutdown()
 
     asyncio.run(run_test())

@@ -59,6 +59,12 @@ class EngineClient:
                 if fut:
                     if not fut.done():
                         fut.set_result(engine_resp)
+                    else:
+                        logger.warning(
+                            "Received late schedule response request_id=%s identity=%s",
+                            request_id,
+                            self.identity,
+                        )
 
                 logger.debug(f"Received response: {engine_resp.request_id}")
             else:
