@@ -76,3 +76,34 @@ def test_kv_aware_policy_falls_back_to_least_load_without_full_blocks():
     )
 
     assert selected.base_url() == "http://idle"
+
+
+def test_kv_aware_policy_prefers_prompt_token_ids_without_tokenizer():
+    indexer = KvRadixIndexer(expected_block_size=2)
+    indexer.apply_stored(
+        WorkerKey("http://a", -1),
+        StoredKvEvent([b"a1"], None, [1, 2], 2),
+    )
+    indexer.apply_stored(
+        WorkerKey("http://b", -1),
+        StoredKvEvent([b"b1", b"b2"], None, [1, 2, 3, 4], 2),
+    )
+
+    policy = KvAwarePolicy(
+        PolicyConfig(
+            policy="kv_aware",
+            kv_block_size=2,
+            kv_overlap_weight=10.0,
+            kv_load_weight=1.0,
+        ),
+        indexer=indexer,
+    )
+
+    selected = policy.select_worker(
+        [FakeWorker("http://a", load=0), FakeWorker("http://b", load=2)],
+        request_body={"prompt": "this should not be tokenized"},
+        api_kind="completions",
+        prompt_token_ids=[1, 2, 3, 4],
+    )
+
+    assert selected.base_url() == "http://b"

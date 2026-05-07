@@ -31,10 +31,12 @@ class PrefixAwarePolicy(Policy):
         headers: Optional[dict] = None,
         request_body: Optional[dict] = None,
         api_kind: Optional[str] = None,
+        prompt_token_ids: Optional[list[int]] = None,
     ) -> Optional[Worker]:
         _ = headers
         _ = request_body
         _ = api_kind
+        _ = prompt_token_ids
 
         if not workers:
             return None

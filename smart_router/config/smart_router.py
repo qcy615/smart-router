@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from smart_router.config.worker import HealthConfig, CircuitBreakerConfig
 from smart_router.config.policy import PolicyConfig
+from smart_router.openai.processing import OpenAIProcessingConfig
 from typing import List
 from argparse import Namespace
 
@@ -20,6 +21,7 @@ class SmartRouterConfig:
 
     prefill_policy_config: PolicyConfig = field(default_factory=PolicyConfig)
     decode_policy_config: PolicyConfig = field(default_factory=PolicyConfig)
+    openai_processing_config: OpenAIProcessingConfig = field(default_factory=OpenAIProcessingConfig)
 
 def build_config(args: Namespace) -> SmartRouterConfig:
     """
@@ -95,6 +97,11 @@ def build_config(args: Namespace) -> SmartRouterConfig:
         args.decode_intra_dp_size,
     )
    
+    openai_tokenizer_path = (
+        getattr(args, "openai_tokenizer_path", None)
+        or getattr(args, "kv_tokenizer_path", None)
+    )
+
     return SmartRouterConfig(
         router_type=args.router_type,
         prefill_urls=args.prefill_urls,
@@ -103,4 +110,10 @@ def build_config(args: Namespace) -> SmartRouterConfig:
         decode_intra_dp_size=args.decode_intra_dp_size,
         decode_policy_config=decode_policy_config if decode_policy_config else decode_default_policy_config,
         prefill_policy_config=prefill_policy_config if prefill_policy_config else prefill_default_policy_config,
+        openai_processing_config=OpenAIProcessingConfig(
+            enabled=bool(getattr(args, "enable_openai_local_processing", False)),
+            tokenizer_path=openai_tokenizer_path,
+            reasoning_parser=getattr(args, "reasoning_parser", "think_tags"),
+            tool_call_parser=getattr(args, "tool_call_parser", "hermes"),
+        ),
     )

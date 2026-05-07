@@ -58,6 +58,11 @@ def test_parser_builds_kv_aware_prefill_config():
             "--prefill-kv-event-endpoints",
             "tcp://127.0.0.1:5557",
             "tcp://127.0.0.2:5557",
+            "--enable-openai-local-processing",
+            "--reasoning-parser",
+            "none",
+            "--tool-call-parser",
+            "none",
         ]
     )
 
@@ -70,3 +75,7 @@ def test_parser_builds_kv_aware_prefill_config():
         "tcp://127.0.0.1:5557",
         "tcp://127.0.0.2:5557",
     ]
+    assert config.openai_processing_config.enabled is True
+    assert config.openai_processing_config.tokenizer_path == "/models/demo"
+    assert config.openai_processing_config.reasoning_parser == "none"
+    assert config.openai_processing_config.tool_call_parser == "none"

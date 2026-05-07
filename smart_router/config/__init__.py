@@ -5,12 +5,14 @@ from smart_router.config.worker import HealthConfig, CircuitBreakerConfig
 from smart_router.config.policy import PolicyConfig
 from smart_router.config.smart_router import SmartRouterConfig, build_config
 from smart_router.config.utils import build_parser
+from smart_router.openai.processing import OpenAIProcessingConfig
 
 __all__ = [
     "SmartRouterConfig",
     "HealthConfig",
     "CircuitBreakerConfig",
     "PolicyConfig",
+    "OpenAIProcessingConfig",
     "build_config",
     "build_parser",
 ]

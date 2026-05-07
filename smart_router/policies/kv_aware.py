@@ -72,6 +72,7 @@ class KvAwarePolicy(Policy):
         headers: Optional[dict] = None,
         request_body: Optional[dict[str, Any]] = None,
         api_kind: Optional[str] = None,
+        prompt_token_ids: Optional[list[int]] = None,
     ) -> Optional[Worker]:
         _ = request_text
         _ = headers
@@ -81,7 +82,11 @@ class KvAwarePolicy(Policy):
         if len(workers) == 1:
             return workers[0]
 
-        local_hashes = self._request_block_hashes(request_body, api_kind)
+        local_hashes = self._request_block_hashes(
+            request_body,
+            api_kind,
+            prompt_token_ids=prompt_token_ids,
+        )
         if not local_hashes or not self.indexer.has_events():
             return self._select_min_load(workers)
 
@@ -120,11 +125,13 @@ class KvAwarePolicy(Policy):
         self,
         request_body: dict[str, Any] | None,
         api_kind: str | None,
+        prompt_token_ids: list[int] | None = None,
     ) -> list[bytes] | None:
-        if self.tokenizer is None:
-            return None
-
-        token_ids = self.tokenizer.tokenize_request(request_body, api_kind)
+        token_ids = prompt_token_ids
+        if token_ids is None:
+            if self.tokenizer is None:
+                return None
+            token_ids = self.tokenizer.tokenize_request(request_body, api_kind)
         if not token_ids:
             return None
 

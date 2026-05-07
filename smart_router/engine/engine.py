@@ -34,6 +34,7 @@ class EngineRequest:
     headers: Dict[str, str] = field(default_factory=dict)
     request_body: Dict[str, Any] = field(default_factory=dict)
     api_kind: str = field(default="")
+    prompt_token_ids: list[int] = field(default_factory=list)
     # request_type: release
     worker_url: str = field(default="")
     worker_rank: int = field(default=-1)
@@ -49,6 +50,7 @@ class EngineRequest:
             headers=data.get("headers", {}),
             request_body=data.get("request_body", {}),
             api_kind=data.get("api_kind", ""),
+            prompt_token_ids=[int(token_id) for token_id in data.get("prompt_token_ids", [])],
             worker_url=data.get("worker_url", ""),
             worker_rank=data.get("worker_rank", -1),
         )
@@ -62,6 +64,7 @@ class EngineRequest:
             "headers": self.headers,
             "request_body": self.request_body,
             "api_kind": self.api_kind,
+            "prompt_token_ids": self.prompt_token_ids,
             "worker_url": self.worker_url,
             "worker_rank": self.worker_rank,
         }
@@ -143,6 +146,7 @@ class Engine:
                 request.headers,
                 request.request_body,
                 request.api_kind,
+                request.prompt_token_ids,
             )
             prefill_worker.increment_load()    
             decode_worker = self.schedule_decode(
@@ -150,6 +154,7 @@ class Engine:
                 request.headers,
                 request.request_body,
                 request.api_kind,
+                request.prompt_token_ids,
             )
             decode_worker.increment_load()
             # build resp
@@ -200,6 +205,7 @@ class Engine:
         headers: Dict[str, str],
         request_body: Dict[str, Any] | None = None,
         api_kind: str | None = None,
+        prompt_token_ids: list[int] | None = None,
     ) -> Worker:
         raise NotImplementedError
     
@@ -209,6 +215,7 @@ class Engine:
         headers: Dict[str, str],
         request_body: Dict[str, Any] | None = None,
         api_kind: str | None = None,
+        prompt_token_ids: list[int] | None = None,
     ) -> Worker:
         raise NotImplementedError
     

@@ -11,14 +11,31 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from smart_router.engine.engine import EngineRequest, EngineResponse, RequestType
+from smart_router.openai.processing import (
+    DONE,
+    CompletionDelta,
+    CompletionSSEDecoder,
+    OpenAIChatProcessor,
+    OpenAIProcessingConfig,
+    OpenAIProcessingError,
+    PreprocessedChatRequest,
+    TokenInfo,
+)
 
 
 logger = logging.getLogger(__name__)
 
 class VllmRoutes:
-    def __init__(self, http_client: Any | None = None):
+    def __init__(
+        self,
+        http_client: Any | None = None,
+        openai_processing_config: OpenAIProcessingConfig | None = None,
+        openai_processor: OpenAIChatProcessor | None = None,
+    ):
         # Shared async HTTP client for forwarding requests.
         self.http_client = http_client or httpx.AsyncClient(timeout=60 * 60.0)
+        self.openai_processing_config = openai_processing_config
+        self._openai_processor = openai_processor
 
     async def close(self) -> None:
         if hasattr(self.http_client, "aclose"):
@@ -155,6 +172,18 @@ class VllmRoutes:
         body = await request.json()
         headers = self._sanitize_headers(request)
         stream = bool(body.get("stream", False))
+        processor_or_response = self._get_openai_chat_processor(request)
+        if isinstance(processor_or_response, Response):
+            return processor_or_response
+        if processor_or_response is not None:
+            return await self._handle_local_chat_completions(
+                request=request,
+                body=body,
+                headers=headers,
+                stream=stream,
+                processor=processor_or_response,
+            )
+
         request_text = self._extract_request_text(body)
         return await self._handle_pd_request(
             request,
@@ -208,6 +237,7 @@ class VllmRoutes:
         request_text: str,
         endpoint_path: str,
         api_kind: str,
+        prompt_token_ids: list[int] | None = None,
     ) -> Dict[str, Any] | Response:
         engine_request = EngineRequest(
             request_id=uuid.uuid4().hex,
@@ -217,6 +247,7 @@ class VllmRoutes:
             headers=headers,
             request_body=body,
             api_kind=api_kind,
+            prompt_token_ids=prompt_token_ids or [],
         )
         # send request to engine using engine_client
         fut: asyncio.Future = await request.app.state.engine_client.send_request(engine_request)
@@ -277,6 +308,332 @@ class VllmRoutes:
             "request_id": request_id,
             "prefill_response": prefill_response,
         }
+
+    def _get_openai_chat_processor(
+        self, request: Request
+    ) -> OpenAIChatProcessor | Response | None:
+        config = getattr(request.app.state, "openai_processing_config", None)
+        if config is None:
+            config = self.openai_processing_config
+        if config is None and self._openai_processor is not None:
+            config = self._openai_processor.config
+        if config is None or not config.enabled:
+            return None
+
+        if self._openai_processor is not None and self._openai_processor.config == config:
+            return self._openai_processor
+
+        try:
+            self._openai_processor = OpenAIChatProcessor(config)
+        except RuntimeError as exc:
+            return JSONResponse(
+                {"error": {"message": str(exc), "type": "server_error"}},
+                status_code=500,
+            )
+        return self._openai_processor
+
+    async def _handle_local_chat_completions(
+        self,
+        request: Request,
+        body: Dict[str, Any],
+        headers: Dict[str, str],
+        stream: bool,
+        processor: OpenAIChatProcessor,
+    ) -> Response:
+        try:
+            processed = processor.preprocess_chat(body)
+        except OpenAIProcessingError as exc:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": exc.message,
+                        "type": "invalid_request_error",
+                    }
+                },
+                status_code=exc.status_code,
+            )
+
+        if stream:
+            return await self._handle_local_stream_request(
+                request=request,
+                original_body=body,
+                processed=processed,
+                headers=headers,
+                processor=processor,
+            )
+        return await self._handle_local_non_stream_request(
+            request=request,
+            original_body=body,
+            processed=processed,
+            headers=headers,
+            processor=processor,
+        )
+
+    async def _handle_local_non_stream_request(
+        self,
+        request: Request,
+        original_body: Dict[str, Any],
+        processed: PreprocessedChatRequest,
+        headers: Dict[str, str],
+        processor: OpenAIChatProcessor,
+    ) -> Response:
+        context_or_response = await self._prepare_pd_context(
+            request=request,
+            body=processed.completion_body,
+            headers=headers,
+            request_text=processed.request_text,
+            endpoint_path="/v1/completions",
+            api_kind="completions",
+            prompt_token_ids=processed.prompt_token_ids,
+        )
+        if isinstance(context_or_response, Response):
+            return context_or_response
+
+        decode_url: str = context_or_response["decode_url"]
+        decode_rank: int = context_or_response["decode_rank"]
+        request_id: str = context_or_response["request_id"]
+        prefill_response: httpx.Response = context_or_response["prefill_response"]
+        prefill_response_json = prefill_response.json()
+        builder = processor.create_chat_builder(processed, original_body)
+        self._apply_prefill_delta(builder, processor, prefill_response_json)
+
+        kv_transfer_params = prefill_response_json.get("kv_transfer_params", {})
+        decode_body = self._get_local_decode_body(processed.completion_body, kv_transfer_params)
+        decode_headers = self._get_decode_headers(headers, request_id, decode_rank)
+        first_prefill_token = processor.extract_first_completion_token(prefill_response_json)
+
+        try:
+            logger.debug(
+                "vLLM Stage2 Decode start id=%s url=%s endpoint=/v1/completions mode=local-non-stream",
+                request_id,
+                decode_url,
+            )
+            async with self.http_client.stream(
+                "POST",
+                f"{decode_url}/v1/completions",
+                json=decode_body,
+                headers=decode_headers,
+            ) as decode_response_stream:
+                if not decode_response_stream.is_success:
+                    return await self._build_stream_upstream_error_response(
+                        "Decode",
+                        decode_response_stream,
+                    )
+
+                await self._consume_local_decode_stream(
+                    decode_response_stream=decode_response_stream,
+                    builder=builder,
+                    processor=processor,
+                    first_prefill_token=first_prefill_token,
+                )
+        finally:
+            await self._decrement_worker(request, decode_url, decode_rank)
+            logger.debug("vLLM Stage2 Decode finish id=%s mode=local-non-stream", request_id)
+
+        return JSONResponse(builder.to_response())
+
+    async def _handle_local_stream_request(
+        self,
+        request: Request,
+        original_body: Dict[str, Any],
+        processed: PreprocessedChatRequest,
+        headers: Dict[str, str],
+        processor: OpenAIChatProcessor,
+    ) -> Response:
+        context_or_response = await self._prepare_pd_context(
+            request=request,
+            body=processed.completion_body,
+            headers=headers,
+            request_text=processed.request_text,
+            endpoint_path="/v1/completions",
+            api_kind="completions",
+            prompt_token_ids=processed.prompt_token_ids,
+        )
+        if isinstance(context_or_response, Response):
+            return context_or_response
+
+        decode_url = context_or_response["decode_url"]
+        decode_rank = context_or_response["decode_rank"]
+        request_id: str = context_or_response["request_id"]
+        prefill_response: httpx.Response = context_or_response["prefill_response"]
+
+        async def stream_response():
+            builder = processor.create_chat_builder(processed, original_body)
+            prefill_response_json = prefill_response.json()
+            for payload in self._apply_prefill_delta(
+                builder,
+                processor,
+                prefill_response_json,
+            ):
+                yield self._sse_bytes(payload)
+
+            kv_transfer_params = prefill_response_json.get("kv_transfer_params", {})
+            decode_body = self._get_local_decode_body(
+                processed.completion_body,
+                kv_transfer_params,
+            )
+            decode_headers = self._get_decode_headers(headers, request_id, decode_rank)
+            first_prefill_token = processor.extract_first_completion_token(prefill_response_json)
+
+            try:
+                logger.debug(
+                    "vLLM Stage2 Decode start id=%s url=%s endpoint=/v1/completions mode=local-stream",
+                    request_id,
+                    decode_url,
+                )
+                async with self.http_client.stream(
+                    "POST",
+                    f"{decode_url}/v1/completions",
+                    json=decode_body,
+                    headers=decode_headers,
+                ) as decode_response_stream:
+                    if not decode_response_stream.is_success:
+                        error_text = await self._read_stream_error_text(decode_response_stream)
+                        yield (
+                            f"data: {json.dumps({'error': f'Decode server error '
+                            f'{decode_response_stream.status_code}: {error_text}'})}\n\n"
+                        ).encode("utf-8")
+                        return
+
+                    async for payload in self._iter_local_decode_payloads(
+                        decode_response_stream=decode_response_stream,
+                        builder=builder,
+                        processor=processor,
+                        first_prefill_token=first_prefill_token,
+                    ):
+                        yield self._sse_bytes(payload)
+                    yield b"data: [DONE]\n\n"
+            finally:
+                await self._decrement_worker(request, decode_url, decode_rank)
+                logger.debug("vLLM Stage2 Decode finish id=%s mode=local-stream", request_id)
+
+        return StreamingResponse(stream_response(), media_type="text/event-stream")
+
+    async def _consume_local_decode_stream(
+        self,
+        decode_response_stream: Any,
+        builder: Any,
+        processor: OpenAIChatProcessor,
+        first_prefill_token: TokenInfo,
+    ) -> None:
+        async for _ in self._iter_local_decode_payloads(
+            decode_response_stream=decode_response_stream,
+            builder=builder,
+            processor=processor,
+            first_prefill_token=first_prefill_token,
+        ):
+            pass
+
+    async def _iter_local_decode_payloads(
+        self,
+        decode_response_stream: Any,
+        builder: Any,
+        processor: OpenAIChatProcessor,
+        first_prefill_token: TokenInfo,
+    ):
+        decoder = CompletionSSEDecoder(processor)
+        seen_first_non_empty_token = False
+        done = False
+        async for chunk in decode_response_stream.aiter_bytes():
+            if not chunk:
+                continue
+            for event in decoder.feed(chunk):
+                if event is DONE:
+                    done = True
+                    break
+                delta = event
+                if not isinstance(delta, CompletionDelta):
+                    continue
+                should_skip, seen_first_non_empty_token = self._should_skip_decode_delta(
+                    delta,
+                    seen_first_non_empty_token,
+                    first_prefill_token,
+                    processor,
+                )
+                if should_skip:
+                    continue
+                for payload in builder.apply_delta(delta):
+                    yield payload
+            if done:
+                break
+
+        if not done:
+            for event in decoder.close():
+                if event is DONE:
+                    break
+                if not isinstance(event, CompletionDelta):
+                    continue
+                should_skip, seen_first_non_empty_token = self._should_skip_decode_delta(
+                    event,
+                    seen_first_non_empty_token,
+                    first_prefill_token,
+                    processor,
+                )
+                if should_skip:
+                    continue
+                for payload in builder.apply_delta(event):
+                    yield payload
+
+        for payload in builder.finish_chunks():
+            yield payload
+
+    def _apply_prefill_delta(
+        self,
+        builder: Any,
+        processor: OpenAIChatProcessor,
+        prefill_response_json: Dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        prefill_delta = processor.completion_delta_from_response_json(prefill_response_json)
+        if prefill_delta is None:
+            return []
+        prefill_delta.finish_reason = None
+        return builder.apply_delta(prefill_delta)
+
+    def _get_local_decode_body(
+        self,
+        completion_body: Dict[str, Any],
+        kv_transfer_params: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        decode_body = copy.deepcopy(completion_body)
+        decode_body["kv_transfer_params"] = kv_transfer_params
+        decode_body["stream"] = True
+        return decode_body
+
+    def _should_skip_decode_delta(
+        self,
+        delta: CompletionDelta,
+        seen_first_non_empty_token: bool,
+        first_prefill_token: TokenInfo,
+        processor: OpenAIChatProcessor,
+    ) -> tuple[bool, bool]:
+        if seen_first_non_empty_token or not delta.has_non_empty_token():
+            return False, seen_first_non_empty_token
+        seen_first_non_empty_token = True
+        return processor.delta_matches_token(delta, first_prefill_token), seen_first_non_empty_token
+
+    def _sse_bytes(self, payload: Dict[str, Any]) -> bytes:
+        return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    async def _build_stream_upstream_error_response(
+        self,
+        stage: str,
+        response: Any,
+    ) -> JSONResponse:
+        error_text = await self._read_stream_error_text(response)
+        logger.error(
+            "%s server error status=%s body=%s",
+            stage,
+            response.status_code,
+            error_text,
+        )
+        return JSONResponse(
+            {"error": f"{stage} server error {response.status_code}: {error_text}"},
+            status_code=500,
+        )
+
+    async def _read_stream_error_text(self, response: Any) -> str:
+        error_body = await response.aread()
+        return error_body.decode(errors="replace")
     
     async def _decrement_worker(self, request: Request, url: str, rank: int):
         engine_request = EngineRequest(
@@ -391,6 +748,10 @@ class VllmRoutes:
                     yield first_chunk
                 else:
                     logger.debug("Prefill first token missing id=%s", request_id)
+                first_prefill_token = self._extract_first_token_info(
+                    api_kind,
+                    prefill_response_json,
+                )
 
                 kv_transfer_params = prefill_response_json.get("kv_transfer_params", {})
                 logger.debug(
@@ -430,16 +791,24 @@ class VllmRoutes:
                         )
                         return
 
-                    skipped_first_non_empty_token = False
+                    seen_first_non_empty_token = False
                     async for chunk in decode_response_stream.aiter_bytes():
                         if not chunk:
                             continue
 
-                        if not skipped_first_non_empty_token:
-                            has_token = self._chunk_has_non_empty_token(chunk, api_kind)
-                            if has_token:
-                                skipped_first_non_empty_token = True
-                                logger.debug("Decode first non-empty token skipped id=%s", request_id)
+                        if not seen_first_non_empty_token:
+                            should_skip, seen_first_non_empty_token = (
+                                self._should_skip_raw_decode_chunk(
+                                    chunk,
+                                    api_kind,
+                                    first_prefill_token,
+                                )
+                            )
+                            if should_skip:
+                                logger.debug(
+                                    "Decode duplicate first non-empty token skipped id=%s",
+                                    request_id,
+                                )
                                 continue
 
                         yield chunk
@@ -535,6 +904,97 @@ class VllmRoutes:
             ],
         }
         return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    def _extract_first_token_info(
+        self,
+        api_kind: str,
+        payload: Dict[str, Any],
+    ) -> TokenInfo:
+        choices = payload.get("choices") or []
+        if not choices:
+            return TokenInfo()
+        choice = choices[0] or {}
+        text = self._extract_choice_text(choice, api_kind)
+        token_ids = self._extract_choice_token_ids(choice)
+        return TokenInfo(
+            text=text or None,
+            token_ids=token_ids[:1],
+        )
+
+    def _should_skip_raw_decode_chunk(
+        self,
+        chunk: bytes,
+        api_kind: str,
+        first_prefill_token: TokenInfo,
+    ) -> tuple[bool, bool]:
+        decode_token = self._first_token_from_raw_chunk(chunk, api_kind)
+        if decode_token is None:
+            return False, False
+        if first_prefill_token.token_ids and decode_token.token_ids:
+            return first_prefill_token.token_ids[0] == decode_token.token_ids[0], True
+        return bool(first_prefill_token.text and decode_token.text == first_prefill_token.text), True
+
+    def _first_token_from_raw_chunk(
+        self,
+        chunk: bytes,
+        api_kind: str,
+    ) -> TokenInfo | None:
+        try:
+            text = chunk.decode("utf-8")
+        except Exception:
+            return None
+
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+
+            data_text = line[5:].strip()
+            if not data_text or data_text == "[DONE]":
+                continue
+
+            try:
+                payload = json.loads(data_text)
+            except Exception:
+                continue
+
+            choices = payload.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0] or {}
+            token_text = self._extract_choice_text(choice, api_kind)
+            token_ids = self._extract_choice_token_ids(choice)
+            if token_text or token_ids:
+                return TokenInfo(text=token_text or None, token_ids=token_ids[:1])
+        return None
+
+    def _extract_choice_text(self, choice: Dict[str, Any], api_kind: str) -> Optional[str]:
+        if api_kind == "chat":
+            delta = choice.get("delta") or {}
+            token_text = delta.get("content")
+            if token_text is None:
+                message = choice.get("message") or {}
+                token_text = message.get("content")
+            if token_text is None:
+                token_text = choice.get("text")
+        else:
+            token_text = choice.get("text")
+            if token_text is None:
+                delta = choice.get("delta") or {}
+                token_text = delta.get("content")
+        return token_text if isinstance(token_text, str) and token_text else None
+
+    def _extract_choice_token_ids(self, choice: Dict[str, Any]) -> list[int]:
+        for key in ("token_ids", "output_token_ids"):
+            value = choice.get(key)
+            if isinstance(value, list):
+                return [int(token_id) for token_id in value]
+        logprobs = choice.get("logprobs")
+        if isinstance(logprobs, dict):
+            value = logprobs.get("token_ids")
+            if isinstance(value, list):
+                return [int(token_id) for token_id in value]
+        return []
 
     def _chunk_has_non_empty_token(self, chunk: bytes, api_kind: str) -> bool:
         try:

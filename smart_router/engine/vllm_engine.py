@@ -92,6 +92,7 @@ class VLLMEngine(Engine):
         headers: Dict[str, str],
         request_body: Dict[str, object] | None = None,
         api_kind: str | None = None,
+        prompt_token_ids: list[int] | None = None,
     ) -> Worker:
         workers = self.worker_registry.get_healthy_by_type(WorkerType.PREFILL)
         prefill: Optional[Worker] = self.prefill_policy.select_worker(
@@ -100,6 +101,7 @@ class VLLMEngine(Engine):
             headers=headers,
             request_body=request_body,
             api_kind=api_kind,
+            prompt_token_ids=prompt_token_ids,
         )
         return prefill
     
@@ -109,6 +111,7 @@ class VLLMEngine(Engine):
         headers: Dict[str, str],
         request_body: Dict[str, object] | None = None,
         api_kind: str | None = None,
+        prompt_token_ids: list[int] | None = None,
     ) -> Worker:
         workers = self.worker_registry.get_healthy_by_type(WorkerType.DECODE)
         decode: Optional[Worker] = self.decode_policy.select_worker(
@@ -117,6 +120,7 @@ class VLLMEngine(Engine):
             headers=headers,
             request_body=request_body,
             api_kind=api_kind,
+            prompt_token_ids=prompt_token_ids,
         )
         return decode
     

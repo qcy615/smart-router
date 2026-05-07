@@ -35,6 +35,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kv-overlap-weight", type=float, default=1.0, help="Weight for kv-aware miss block cost.")
     parser.add_argument("--kv-load-weight", type=float, default=1.0, help="Weight for active worker load in kv-aware policy.")
     parser.add_argument("--kv-event-topic", default="", help="ZMQ topic used by vLLM KV event publisher.")
+    parser.add_argument(
+        "--enable-openai-local-processing",
+        action="store_true",
+        help="Enable local OpenAI chat token preprocessing and postprocessing.",
+    )
+    parser.add_argument(
+        "--openai-tokenizer-path",
+        default=None,
+        help="Tokenizer/model path used by local OpenAI processing. Defaults to --kv-tokenizer-path.",
+    )
+    parser.add_argument(
+        "--reasoning-parser",
+        default="think_tags",
+        choices=["think_tags", "none"],
+        help="Reasoning parser used by local OpenAI postprocessing.",
+    )
+    parser.add_argument(
+        "--tool-call-parser",
+        default="hermes",
+        choices=["hermes", "none"],
+        help="Tool-call parser used by local OpenAI postprocessing.",
+    )
     
     parser.add_argument(
         "--router_type",
