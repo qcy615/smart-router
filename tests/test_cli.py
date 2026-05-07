@@ -7,6 +7,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from smart_router import cli
+from smart_router.config import build_config, build_parser
 
 
 def test_cli_help_lists_available_commands(capsys):
@@ -37,3 +38,35 @@ def test_cli_dispatches_to_benchmark_handler(monkeypatch):
 
     assert cli.main(["benchmark", "--help"]) == 0
     assert benchmark_calls == [["--help"]]
+
+
+def test_parser_builds_kv_aware_prefill_config():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--prefill-urls",
+            "http://prefill-a",
+            "http://prefill-b",
+            "--decode-urls",
+            "http://decode",
+            "--prefill-policy",
+            "kv_aware",
+            "--kv-tokenizer-path",
+            "/models/demo",
+            "--kv-block-size",
+            "32",
+            "--prefill-kv-event-endpoints",
+            "tcp://127.0.0.1:5557",
+            "tcp://127.0.0.2:5557",
+        ]
+    )
+
+    config = build_config(args)
+
+    assert config.prefill_policy_config.policy == "kv_aware"
+    assert config.prefill_policy_config.kv_tokenizer_path == "/models/demo"
+    assert config.prefill_policy_config.kv_block_size == 32
+    assert config.prefill_policy_config.kv_event_endpoints == [
+        "tcp://127.0.0.1:5557",
+        "tcp://127.0.0.2:5557",
+    ]

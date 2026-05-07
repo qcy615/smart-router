@@ -207,6 +207,7 @@ class VllmRoutes:
         headers: Dict[str, str],
         request_text: str,
         endpoint_path: str,
+        api_kind: str,
     ) -> Dict[str, Any] | Response:
         engine_request = EngineRequest(
             request_id=uuid.uuid4().hex,
@@ -214,6 +215,8 @@ class VllmRoutes:
             request_text=request_text,
             request_type=RequestType.SCHEDULE,
             headers=headers,
+            request_body=body,
+            api_kind=api_kind,
         )
         # send request to engine using engine_client
         fut: asyncio.Future = await request.app.state.engine_client.send_request(engine_request)
@@ -302,6 +305,7 @@ class VllmRoutes:
             headers=headers,
             request_text=request_text,
             endpoint_path=endpoint_path,
+            api_kind=api_kind,
         )
         if isinstance(context_or_response, Response):
             return context_or_response
@@ -364,6 +368,7 @@ class VllmRoutes:
             headers=headers,
             request_text=request_text,
             endpoint_path=endpoint_path,
+            api_kind=api_kind,
         )
         if isinstance(context_or_response, Response):
             return context_or_response

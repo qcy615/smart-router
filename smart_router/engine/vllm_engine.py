@@ -63,18 +63,60 @@ class VLLMEngine(Engine):
 
         logger.info("registered workers: %s", self.worker_registry.get_all_urls())
 
+    async def run(self):
+        self._start_policy(self.prefill_policy)
+        self._start_policy(self.decode_policy)
+        try:
+            await super().run()
+        finally:
+            await self._stop_policy(self.prefill_policy)
+            await self._stop_policy(self.decode_policy)
+
+    def _start_policy(self, policy: Policy) -> None:
+        start = getattr(policy, "start", None)
+        if callable(start):
+            start()
+
+    async def _stop_policy(self, policy: Policy) -> None:
+        stop = getattr(policy, "stop", None)
+        if not callable(stop):
+            return
+        result = stop()
+        if asyncio.iscoroutine(result):
+            await result
+
     
-    def schedule_prefill(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_prefill(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_body: Dict[str, object] | None = None,
+        api_kind: str | None = None,
+    ) -> Worker:
         workers = self.worker_registry.get_healthy_by_type(WorkerType.PREFILL)
         prefill: Optional[Worker] = self.prefill_policy.select_worker(
-            workers, request_text=request_text, headers=headers
+            workers,
+            request_text=request_text,
+            headers=headers,
+            request_body=request_body,
+            api_kind=api_kind,
         )
         return prefill
     
-    def schedule_decode(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_decode(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_body: Dict[str, object] | None = None,
+        api_kind: str | None = None,
+    ) -> Worker:
         workers = self.worker_registry.get_healthy_by_type(WorkerType.DECODE)
         decode: Optional[Worker] = self.decode_policy.select_worker(
-            workers, request_text=request_text, headers=headers
+            workers,
+            request_text=request_text,
+            headers=headers,
+            request_body=request_body,
+            api_kind=api_kind,
         )
         return decode
     

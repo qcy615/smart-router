@@ -32,6 +32,8 @@ class EngineRequest:
     # request_type: schedule
     request_text: str = field(default="")
     headers: Dict[str, str] = field(default_factory=dict)
+    request_body: Dict[str, Any] = field(default_factory=dict)
+    api_kind: str = field(default="")
     # request_type: release
     worker_url: str = field(default="")
     worker_rank: int = field(default=-1)
@@ -43,10 +45,12 @@ class EngineRequest:
             request_id=data["request_id"],
             identity=data["identity"],
             request_type=data["request_type"],
-            request_text=data["request_text"],
-            headers=data["headers"],
-            worker_url=data["worker_url"],
-            worker_rank=data["worker_rank"],
+            request_text=data.get("request_text", ""),
+            headers=data.get("headers", {}),
+            request_body=data.get("request_body", {}),
+            api_kind=data.get("api_kind", ""),
+            worker_url=data.get("worker_url", ""),
+            worker_rank=data.get("worker_rank", -1),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,6 +60,8 @@ class EngineRequest:
             "request_type": self.request_type,
             "request_text": self.request_text,
             "headers": self.headers,
+            "request_body": self.request_body,
+            "api_kind": self.api_kind,
             "worker_url": self.worker_url,
             "worker_rank": self.worker_rank,
         }
@@ -132,9 +138,19 @@ class Engine:
             request = await self.waiting_queue.get()
             logger.debug(f"Processing prefill for request: {request.request_id}")
             # schedule
-            prefill_worker = self.schedule_prefill(request.request_text, request.headers) 
+            prefill_worker = self.schedule_prefill(
+                request.request_text,
+                request.headers,
+                request.request_body,
+                request.api_kind,
+            )
             prefill_worker.increment_load()    
-            decode_worker = self.schedule_decode(request.request_text, request.headers)
+            decode_worker = self.schedule_decode(
+                request.request_text,
+                request.headers,
+                request.request_body,
+                request.api_kind,
+            )
             decode_worker.increment_load()
             # build resp
             resp = EngineResponse(
@@ -159,6 +175,10 @@ class Engine:
         prefill_loop: prefill_waiting_queue -> request -> handle prefill -> decode_waiting_queue
         decode_loop: decode_waiting_queue -> request -> handle decode
         """
+        if type(self) is Engine:
+            logger.warning("Base Engine.run() called without a concrete scheduler; returning")
+            return
+
         await asyncio.gather(
             self.receive_loop(),
             self.schedule_loop(),
@@ -174,10 +194,22 @@ class Engine:
         # closesocket
         self.output_socket.close(0)
 
-    def schedule_prefill(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_prefill(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_body: Dict[str, Any] | None = None,
+        api_kind: str | None = None,
+    ) -> Worker:
         raise NotImplementedError
     
-    def schedule_decode(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_decode(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_body: Dict[str, Any] | None = None,
+        api_kind: str | None = None,
+    ) -> Worker:
         raise NotImplementedError
     
     

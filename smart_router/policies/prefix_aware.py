@@ -29,8 +29,12 @@ class PrefixAwarePolicy(Policy):
         workers: List[Worker],
         request_text: Optional[str] = None,
         headers: Optional[dict] = None,
+        request_body: Optional[dict] = None,
+        api_kind: Optional[str] = None,
     ) -> Optional[Worker]:
         _ = headers
+        _ = request_body
+        _ = api_kind
 
         if not workers:
             return None

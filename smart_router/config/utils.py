@@ -2,7 +2,14 @@
 import argparse
 
 
-SUPPORT_POLICIES = ["round_robin", "power_of_two", "prefix_aware", "consistent_hash", "minimum_load"]
+SUPPORT_POLICIES = [
+    "round_robin",
+    "power_of_two",
+    "prefix_aware",
+    "consistent_hash",
+    "minimum_load",
+    "kv_aware",
+]
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -21,6 +28,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-threshold", type=float, default=0.5, help="The cache threshold for prefix-aware policy for prefill.")
     parser.add_argument("--balance-abs-threshold", type=int, default=32, help="The absolute balance threshold for prefix-aware policy for prefill.")
     parser.add_argument("--balance-rel-threshold", type=float, default=0.1, help="The relative balance threshold for prefix-aware policy for prefill.")
+    parser.add_argument("--kv-tokenizer-path", default=None, help="Tokenizer/model path used by kv-aware routing.")
+    parser.add_argument("--kv-block-size", type=int, default=16, help="KV cache block size used by kv-aware routing.")
+    parser.add_argument("--prefill-kv-event-endpoints", nargs="*", default=[], help="vLLM KV event PUB endpoints aligned with --prefill-urls.")
+    parser.add_argument("--prefill-kv-replay-endpoints", nargs="*", default=[], help="Optional vLLM KV replay ROUTER endpoints aligned with --prefill-urls.")
+    parser.add_argument("--kv-overlap-weight", type=float, default=1.0, help="Weight for kv-aware miss block cost.")
+    parser.add_argument("--kv-load-weight", type=float, default=1.0, help="Weight for active worker load in kv-aware policy.")
+    parser.add_argument("--kv-event-topic", default="", help="ZMQ topic used by vLLM KV event publisher.")
     
     parser.add_argument(
         "--router_type",

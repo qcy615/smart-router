@@ -162,6 +162,8 @@ def test_non_stream_chat_route_forwards_kv_params_and_releases_decode_worker():
         "remote_engine_id": "prefill-engine"
     }
     assert http_client.post_calls[1]["headers"]["X-data-parallel-rank"] == "1"
+    assert engine_client.requests[0].request_body == body
+    assert engine_client.requests[0].api_kind == "chat"
 
     release_requests = [
         req for req in engine_client.requests if req.request_type == RequestType.RELEASE
