@@ -68,7 +68,7 @@ if msgspec is not None:
         block_size: int
         lora_id: int | None
         medium: str | None
-        lora_name: str | None
+        lora_name: str | None = None
         extra_keys: list[tuple[Any, ...] | None] | None = None
         group_idx: int | None = None
 
