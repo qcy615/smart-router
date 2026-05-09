@@ -196,6 +196,87 @@ def test_engine_schedule_loop_returns_error_when_no_healthy_worker():
     asyncio.run(run())
 
 
+def test_engine_health_request_does_not_block_receive_loop():
+    class FakeInputSocket:
+        def __init__(self, messages):
+            self.messages = asyncio.Queue()
+            for message in messages:
+                self.messages.put_nowait(message)
+
+        async def recv_json(self):
+            return await self.messages.get()
+
+    class TestEngine(Engine):
+        def __init__(self):
+            self.input_socket = FakeInputSocket(
+                [
+                    EngineRequest(
+                        request_id="health-1",
+                        identity="test",
+                        request_type=RequestType.HEALTH,
+                    ).to_dict(),
+                    EngineRequest(
+                        request_id="schedule-1",
+                        identity="test",
+                        request_type=RequestType.SCHEDULE,
+                    ).to_dict(),
+                ]
+            )
+            self.waiting_queue = asyncio.Queue()
+            self.sent = []
+            self.worker_registry = WorkerRegistry()
+            self._health_check_lock = asyncio.Lock()
+            self._background_tasks = set()
+            self.health_started = asyncio.Event()
+            self.finish_health = asyncio.Event()
+
+        async def refresh_worker_health(self, request_id=""):
+            self.health_started.set()
+            await self.finish_health.wait()
+            return EngineHealthResponse(
+                request_id=request_id,
+                status="unhealthy",
+                prefill_healthy=0,
+                prefill_total=0,
+                decode_healthy=0,
+                decode_total=0,
+            )
+
+        async def send_response(self, request, msg):
+            self.sent.append(msg)
+
+    async def run():
+        engine = TestEngine()
+        task = asyncio.create_task(engine.receive_loop())
+
+        await asyncio.wait_for(engine.health_started.wait(), timeout=1)
+        for _ in range(20):
+            if engine.waiting_queue.qsize() == 1:
+                break
+            await asyncio.sleep(0)
+
+        assert engine.waiting_queue.qsize() == 1
+        queued = await engine.waiting_queue.get()
+        assert queued.request_id == "schedule-1"
+        assert engine.sent == []
+
+        engine.finish_health.set()
+        for _ in range(20):
+            if engine.sent:
+                break
+            await asyncio.sleep(0)
+
+        assert engine.sent[0]["request_id"] == "health-1"
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(run())
+
+
 def test_discovered_workers_start_unhealthy_then_health_refresh_marks_healthy(monkeypatch):
     fake_client = FakeWorkerClient(
         {

@@ -169,6 +169,7 @@ class Engine:
         self.worker_registry: WorkerRegistry = WorkerRegistry()
         self._health_check_lock = asyncio.Lock()
         self._health_refresh_task: Optional[asyncio.Task] = None
+        self._background_tasks: set[asyncio.Task] = set()
 
 
     async def receive_loop(self):
@@ -194,10 +195,9 @@ class Engine:
                 logger.debug(f"Received release request: {engine_request.request_id}, worker id: {worker_id}")
 
             elif engine_request.request_type == RequestType.HEALTH:
-                health_response = await self.refresh_worker_health(
-                    request_id=engine_request.request_id
-                )
-                await self.send_response(engine_request, health_response.to_dict())
+                task = asyncio.create_task(self._handle_health_request(engine_request))
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
 
             elif engine_request.request_type == RequestType.WORKERS:
                 workers_response = self.get_worker_urls_response(
@@ -248,6 +248,17 @@ class Engine:
                 decode_rank=decode_worker.dp_rank(),
             )
             await self.send_response(request, resp.to_dict())
+
+    async def _handle_health_request(self, request: EngineRequest) -> None:
+        try:
+            health_response = await self.refresh_worker_health(
+                request_id=request.request_id
+            )
+        except Exception:
+            logger.exception("Failed to process health request")
+            health_response = self.get_health_response(request_id=request.request_id)
+
+        await self.send_response(request, health_response.to_dict())
 
     async def refresh_worker_health(self, request_id: str = "") -> EngineHealthResponse:
         async with self._health_check_lock:
