@@ -5,7 +5,7 @@ from typing import Dict, Optional
 from smart_router.engine.engine import Engine
 from smart_router.config import SmartRouterConfig
 from smart_router.policies import Policy, get_policy_config
-from smart_router.worker import BasicWorker, DPAwareWorker, Worker, WorkerRegistry, WorkerType
+from smart_router.worker import Worker, WorkerRegistry, WorkerType
 
 logger = logging.getLogger(__name__)
 
@@ -36,35 +36,19 @@ class SglangEngine(Engine):
 
         # Initialize prefill workers.
         for url in config.prefill_urls or []:
-            if config.prefill_intra_dp_size > 1:
-                for rank in range(config.prefill_intra_dp_size):
-                    worker = DPAwareWorker(
-                        url,
-                        WorkerType.PREFILL,
-                        config,
-                        rank,
-                        config.prefill_intra_dp_size,
-                    )
-                    self.worker_registry.register(worker)
-            else:
-                worker = BasicWorker(url, WorkerType.PREFILL, config)
-                self.worker_registry.register(worker)
+            self.register_worker_group(
+                url,
+                WorkerType.PREFILL,
+                config.prefill_intra_dp_size,
+            )
 
         # Initialize decode workers.
         for url in config.decode_urls or []:
-            if config.decode_intra_dp_size > 1:
-                for rank in range(config.decode_intra_dp_size):
-                    worker = DPAwareWorker(
-                        url,
-                        WorkerType.DECODE,
-                        config,
-                        rank,
-                        config.decode_intra_dp_size,
-                    )
-                    self.worker_registry.register(worker)
-            else:
-                worker = BasicWorker(url, WorkerType.DECODE, config)
-                self.worker_registry.register(worker)
+            self.register_worker_group(
+                url,
+                WorkerType.DECODE,
+                config.decode_intra_dp_size,
+            )
 
         logger.info("registered workers: %s", self.worker_registry.get_all_urls())
 

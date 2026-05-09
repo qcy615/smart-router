@@ -3,12 +3,12 @@ import asyncio
 import zmq
 import zmq.asyncio
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import json
 import platform
 
 from smart_router.engine.utils import make_zmq_socket
-from smart_router.worker import Worker, WorkerRegistry, WorkerType
+from smart_router.worker import BasicWorker, DPAwareWorker, Worker, WorkerRegistry, WorkerType
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class RequestType:
     SCHEDULE = "schedule"
     RELEASE = "release"
     HEALTH = "health"
+    WORKERS = "workers"
 
 
 @dataclass
@@ -124,6 +125,29 @@ class EngineHealthResponse:
             "decode_total": self.decode_total,
             "response_type": RequestType.HEALTH,
         }
+
+
+@dataclass
+class EngineWorkerUrlsResponse:
+    request_id: str
+    prefill_urls: List[str]
+    decode_urls: List[str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EngineWorkerUrlsResponse":
+        return cls(
+            request_id=data["request_id"],
+            prefill_urls=list(data.get("prefill_urls") or []),
+            decode_urls=list(data.get("decode_urls") or []),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "request_id": self.request_id,
+            "prefill_urls": self.prefill_urls,
+            "decode_urls": self.decode_urls,
+            "response_type": RequestType.WORKERS,
+        }
     
 
 
@@ -144,6 +168,7 @@ class Engine:
 
         self.worker_registry: WorkerRegistry = WorkerRegistry()
         self._health_check_lock = asyncio.Lock()
+        self._health_refresh_task: Optional[asyncio.Task] = None
 
 
     async def receive_loop(self):
@@ -173,6 +198,12 @@ class Engine:
                     request_id=engine_request.request_id
                 )
                 await self.send_response(engine_request, health_response.to_dict())
+
+            elif engine_request.request_type == RequestType.WORKERS:
+                workers_response = self.get_worker_urls_response(
+                    request_id=engine_request.request_id
+                )
+                await self.send_response(engine_request, workers_response.to_dict())
 
     async def schedule_loop(self):
         while True:
@@ -270,6 +301,13 @@ class Engine:
             decode_total=decode_total,
         )
 
+    def get_worker_urls_response(self, request_id: str = "") -> EngineWorkerUrlsResponse:
+        return EngineWorkerUrlsResponse(
+            request_id=request_id,
+            prefill_urls=self.worker_registry.get_base_urls_by_type(WorkerType.PREFILL),
+            decode_urls=self.worker_registry.get_base_urls_by_type(WorkerType.DECODE),
+        )
+
     async def health_check_loop(self):
         while True:
             interval_secs = getattr(
@@ -285,6 +323,91 @@ class Engine:
             await asyncio.sleep(interval_secs)
             await self.refresh_worker_health()
 
+    def register_worker_group(
+        self,
+        base_url: str,
+        worker_type: WorkerType,
+        dp_size: int,
+        initial_healthy: bool = True,
+    ) -> None:
+        if dp_size > 1:
+            for rank in range(dp_size):
+                worker = DPAwareWorker(
+                    base_url,
+                    worker_type,
+                    self.config,
+                    rank,
+                    dp_size,
+                )
+                worker.set_healthy(initial_healthy)
+                self.worker_registry.register(worker)
+        else:
+            worker = BasicWorker(base_url, worker_type, self.config)
+            worker.set_healthy(initial_healthy)
+            self.worker_registry.register(worker)
+
+    def remove_worker_group(self, base_url: str, worker_type: WorkerType) -> None:
+        removed = self.worker_registry.remove_by_base_url(worker_type, base_url)
+        if removed:
+            logger.info(
+                "removed discovered workers: type=%s base_url=%s count=%s",
+                worker_type,
+                base_url,
+                len(removed),
+            )
+
+    def _dp_size_for_type(self, worker_type: WorkerType) -> int:
+        if worker_type == WorkerType.PREFILL:
+            return self.config.prefill_intra_dp_size
+        if worker_type == WorkerType.DECODE:
+            return self.config.decode_intra_dp_size
+        return 1
+
+    async def _upsert_discovered_worker(self, discovered_worker) -> None:
+        dp_size = self._dp_size_for_type(discovered_worker.worker_type)
+        self.register_worker_group(
+            discovered_worker.base_url,
+            discovered_worker.worker_type,
+            dp_size,
+            initial_healthy=False,
+        )
+        logger.info(
+            "registered discovered worker: pod=%s type=%s base_url=%s dp_size=%s",
+            discovered_worker.pod_name,
+            discovered_worker.worker_type,
+            discovered_worker.base_url,
+            dp_size,
+        )
+        self._request_worker_health_refresh()
+
+    async def _delete_discovered_worker(self, discovered_worker) -> None:
+        self.remove_worker_group(
+            discovered_worker.base_url,
+            discovered_worker.worker_type,
+        )
+
+    def _request_worker_health_refresh(self) -> None:
+        task = self._health_refresh_task
+        if task is not None and not task.done():
+            return
+        loop = asyncio.get_running_loop()
+        self._health_refresh_task = loop.create_task(
+            self._debounced_worker_health_refresh()
+        )
+
+    async def _debounced_worker_health_refresh(self) -> None:
+        await asyncio.sleep(0.1)
+        await self.refresh_worker_health()
+
+    async def k8s_discovery_loop(self) -> None:
+        from smart_router.discovery.k8s import K8sPodDiscovery
+
+        discovery = K8sPodDiscovery.from_config(self.config)
+        await discovery.run(
+            on_upsert=self._upsert_discovered_worker,
+            on_delete=self._delete_discovered_worker,
+        )
+
     async def send_response(self, request: EngineRequest, msg: Dict[str, Any]) -> None:
         await self.output_socket.send_multipart([
             request.identity.encode("utf-8"),
@@ -299,11 +422,14 @@ class Engine:
         decode_loop: decode_waiting_queue -> request -> handle decode
         """
         await self.refresh_worker_health()
-        await asyncio.gather(
+        tasks = [
             self.receive_loop(),
             self.schedule_loop(),
             self.health_check_loop(),
-        )
+        ]
+        if getattr(getattr(self, "config", None), "enable_k8s_discovery", False):
+            tasks.append(self.k8s_discovery_loop())
+        await asyncio.gather(*tasks)
 
     async def shutdown(self):
         """Gracefully shutdown the engine:

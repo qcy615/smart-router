@@ -115,6 +115,9 @@ def _build_app(config):
         on_startup=[startup],
         on_shutdown=[shutdown],
     )
+    application.state.enable_k8s_discovery = getattr(
+        config, "enable_k8s_discovery", False
+    )
     health_config = getattr(config, "health_config", None)
     application.state.health_timeout_secs = getattr(health_config, "timeout_secs", 5) + 1
     return application
@@ -172,8 +175,12 @@ def _init_app():
     _argv = sys.argv[1:]
     if _argv and _argv[0]== "serve":
         _argv = _argv[1:]
-    _args = build_parser().parse_args(_argv)
-    _config = build_config(_args)
+    parser = build_parser()
+    _args = parser.parse_args(_argv)
+    try:
+        _config = build_config(_args)
+    except ValueError as exc:
+        parser.error(str(exc))
     app = _build_app(_config)
 
 
@@ -182,6 +189,9 @@ async def startup():
     global _receive_task
     app.state.engine_client = EngineClient(input_addr, output_addr)
     app.state.model_source_urls = _load_model_source_urls()
+    app.state.enable_k8s_discovery = getattr(
+        globals().get("_config"), "enable_k8s_discovery", False
+    )
     _receive_task = asyncio.create_task(app.state.engine_client.receive_loop())
     logger.info(f"Engineclient started with identity: {app.state.engine_client.identity}")
 
@@ -219,7 +229,10 @@ def main(argv: list[str]|None = None) -> int:
     args = parser.parse_args(argv)
 
     # Build config
-    config = build_config(args)
+    try:
+        config = build_config(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     _dump_model_source_urls(config.prefill_urls, config.decode_urls)
 
     init_logging(args.log_level)

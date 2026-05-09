@@ -30,15 +30,28 @@ class WorkerRegistry:
         """Register a new worker and return its unique ID."""
         with self._lock:
             worker_id = worker.url()
+            worker_type_key = worker.worker_type()
+            old_worker = self._workers.get(worker_id)
+            if old_worker is not None:
+                old_type_key = old_worker.worker_type()
+                if old_type_key == worker_type_key:
+                    return
+
+                if old_type_key in self._type_workers:
+                    self._type_workers[old_type_key] = [
+                        id for id in self._type_workers[old_type_key] if id != worker_id
+                    ]
+                    if not self._type_workers[old_type_key]:
+                        del self._type_workers[old_type_key]
 
             # Store worker
             self._workers[worker_id] = worker
 
             # Update type index
-            worker_type_key = worker.worker_type()
             if worker_type_key not in self._type_workers:
                 self._type_workers[worker_type_key] = []
-            self._type_workers[worker_type_key].append(worker_id)
+            if worker_id not in self._type_workers[worker_type_key]:
+                self._type_workers[worker_type_key].append(worker_id)
 
     def remove(self, worker_id: str) -> Optional[Worker]:
         """Remove a worker by ID."""
@@ -58,6 +71,23 @@ class WorkerRegistry:
                     del self._type_workers[worker_type_key]
 
             return worker
+
+    def remove_by_base_url(
+        self, worker_type: WorkerType, base_url: str
+    ) -> List[Worker]:
+        """Remove all workers matching a type and base URL."""
+        with self._lock:
+            worker_ids = [
+                worker_id
+                for worker_id, worker in self._workers.items()
+                if worker.worker_type() == worker_type and worker.base_url() == base_url
+            ]
+            removed = []
+            for worker_id in worker_ids:
+                worker = self.remove(worker_id)
+                if worker is not None:
+                    removed.append(worker)
+            return removed
 
     def get(self, worker_id: str) -> Optional[Worker]:
         """Get a worker by ID."""
@@ -129,6 +159,20 @@ class WorkerRegistry:
         """Get all worker URLs."""
         with self._lock:
             return [worker.url() for worker in self._workers.values()]
+
+    def get_base_urls_by_type(
+        self, worker_type: WorkerType, healthy_only: bool = False
+    ) -> List[str]:
+        """Return unique base URLs for one worker type, preserving registry order."""
+        with self._lock:
+            urls: List[str] = []
+            for worker in self.get_by_type(worker_type):
+                if healthy_only and not worker.is_healthy():
+                    continue
+                base_url = worker.base_url()
+                if base_url not in urls:
+                    urls.append(base_url)
+            return urls
 
     def __repr__(self) -> str:
         """String representation."""

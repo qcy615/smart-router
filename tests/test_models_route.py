@@ -2,6 +2,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from smart_router.engine.engine import EngineWorkerUrlsResponse, RequestType
 from smart_router.entrypoints.serve.vllm_routes import VllmRoutes
 
 
@@ -27,6 +28,29 @@ class FakeHttpClient:
 
     async def aclose(self):
         return None
+
+
+class FakeWorkerUrlEngineClient:
+    identity = "test-client"
+
+    def __init__(self):
+        self.requests = []
+
+    async def send_request(self, request):
+        self.requests.append(request)
+        assert request.request_type == RequestType.WORKERS
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+        future.set_result(
+            EngineWorkerUrlsResponse(
+                request_id=request.request_id,
+                prefill_urls=["http://prefill-a"],
+                decode_urls=["http://decode-b"],
+            )
+        )
+        return future
 
 
 def test_models_route_aggregates_and_deduplicates_upstream_models():
@@ -87,3 +111,34 @@ def test_models_route_returns_503_when_all_upstreams_fail():
 
     assert response.status_code == 503
     assert response.json()["error"] == "No available upstream /v1/models endpoint"
+
+
+def test_models_route_uses_engine_worker_urls_in_discovery_mode():
+    routes = VllmRoutes(
+        http_client=FakeHttpClient(
+            {
+                "http://prefill-a/v1/models": FakeResponse(
+                    200,
+                    {"object": "list", "data": [{"id": "model-a"}]},
+                ),
+                "http://decode-b/v1/models": FakeResponse(
+                    200,
+                    {"object": "list", "data": [{"id": "model-b"}]},
+                ),
+            }
+        )
+    )
+    app = Starlette(routes=[Route("/v1/models", routes.models, methods=["GET"])])
+    app.state.model_source_urls = []
+    app.state.enable_k8s_discovery = True
+    app.state.engine_client = FakeWorkerUrlEngineClient()
+
+    with TestClient(app) as client:
+        response = client.get("/v1/models")
+
+    assert response.status_code == 200
+    assert [model["id"] for model in response.json()["data"]] == [
+        "model-a",
+        "model-b",
+    ]
+    assert len(app.state.engine_client.requests) == 1

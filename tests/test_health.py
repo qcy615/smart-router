@@ -8,6 +8,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from smart_router.config import HealthConfig, SmartRouterConfig
+from smart_router.discovery.k8s import DiscoveredWorker
 from smart_router.engine.engine import (
     Engine,
     EngineHealthResponse,
@@ -94,6 +95,19 @@ def test_registry_groups_dp_workers_by_base_url_and_filters_health():
     assert registry.get_healthy_by_type(WorkerType.DECODE) == [decode]
 
 
+def test_registry_register_is_idempotent_for_duplicate_worker_ids():
+    registry = WorkerRegistry()
+    config = _config()
+    worker_a = BasicWorker("http://prefill", WorkerType.PREFILL, config)
+    worker_b = BasicWorker("http://prefill", WorkerType.PREFILL, config)
+
+    registry.register(worker_a)
+    registry.register(worker_b)
+
+    assert registry.get_by_type(WorkerType.PREFILL) == [worker_a]
+    assert registry.get_all_urls() == ["http://prefill"]
+
+
 def test_engine_health_response_requires_one_healthy_prefill_and_decode(monkeypatch, caplog):
     fake_client = FakeWorkerClient(
         {
@@ -178,6 +192,50 @@ def test_engine_schedule_loop_returns_error_when_no_healthy_worker():
 
         assert engine.sent[0]["prefill_url"] is None
         assert engine.sent[0]["error"] == "No available prefill workers"
+
+    asyncio.run(run())
+
+
+def test_discovered_workers_start_unhealthy_then_health_refresh_marks_healthy(monkeypatch):
+    fake_client = FakeWorkerClient(
+        {
+            "http://prefill/health": httpx.Response(200),
+        }
+    )
+    monkeypatch.setattr("smart_router.worker.basic_worker.WORKER_CLIENT", fake_client)
+
+    async def run():
+        engine = object.__new__(Engine)
+        engine.config = SmartRouterConfig(
+            prefill_urls=[],
+            decode_urls=[],
+            prefill_intra_dp_size=2,
+            decode_intra_dp_size=1,
+            health_config=HealthConfig(timeout_secs=1, check_interval_secs=60),
+            enable_k8s_discovery=True,
+            prefill_port=8100,
+            decode_port=8200,
+        )
+        engine.worker_registry = WorkerRegistry()
+        engine._health_check_lock = asyncio.Lock()
+        engine._health_refresh_task = None
+
+        await engine._upsert_discovered_worker(
+            DiscoveredWorker(
+                pod_name="prefill-pod",
+                worker_type=WorkerType.PREFILL,
+                base_url="http://prefill",
+            )
+        )
+
+        assert engine.worker_registry.get_healthy_by_type(WorkerType.PREFILL) == []
+        await asyncio.sleep(0.2)
+
+        healthy = engine.worker_registry.get_healthy_by_type(WorkerType.PREFILL)
+        assert len(healthy) == 2
+        assert fake_client.calls == [
+            {"url": "http://prefill/health", "timeout": 1},
+        ]
 
     asyncio.run(run())
 
