@@ -300,6 +300,7 @@ def test_discovered_workers_start_unhealthy_then_health_refresh_marks_healthy(mo
         engine.worker_registry = WorkerRegistry()
         engine._health_check_lock = asyncio.Lock()
         engine._health_refresh_task = None
+        engine._background_tasks = set()
 
         await engine._upsert_discovered_worker(
             DiscoveredWorker(
@@ -310,10 +311,12 @@ def test_discovered_workers_start_unhealthy_then_health_refresh_marks_healthy(mo
         )
 
         assert engine.worker_registry.get_healthy_by_type(WorkerType.PREFILL) == []
+        assert engine._health_refresh_task in engine._background_tasks
         await asyncio.sleep(0.2)
 
         healthy = engine.worker_registry.get_healthy_by_type(WorkerType.PREFILL)
         assert len(healthy) == 2
+        assert engine._background_tasks == set()
         assert fake_client.calls == [
             {"url": "http://prefill/health", "timeout": 1},
         ]

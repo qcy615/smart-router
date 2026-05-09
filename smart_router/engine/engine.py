@@ -195,9 +195,9 @@ class Engine:
                 logger.debug(f"Received release request: {engine_request.request_id}, worker id: {worker_id}")
 
             elif engine_request.request_type == RequestType.HEALTH:
-                task = asyncio.create_task(self._handle_health_request(engine_request))
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
+                self._track_background_task(
+                    asyncio.create_task(self._handle_health_request(engine_request))
+                )
 
             elif engine_request.request_type == RequestType.WORKERS:
                 workers_response = self.get_worker_urls_response(
@@ -259,6 +259,23 @@ class Engine:
             health_response = self.get_health_response(request_id=request.request_id)
 
         await self.send_response(request, health_response.to_dict())
+
+    def _track_background_task(self, task: asyncio.Task) -> asyncio.Task:
+        self._background_tasks.add(task)
+
+        def _on_done(done_task: asyncio.Task) -> None:
+            self._background_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            exc = done_task.exception()
+            if exc is not None:
+                logger.error(
+                    "Background task failed",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                )
+
+        task.add_done_callback(_on_done)
+        return task
 
     async def refresh_worker_health(self, request_id: str = "") -> EngineHealthResponse:
         async with self._health_check_lock:
@@ -402,8 +419,8 @@ class Engine:
         if task is not None and not task.done():
             return
         loop = asyncio.get_running_loop()
-        self._health_refresh_task = loop.create_task(
-            self._debounced_worker_health_refresh()
+        self._health_refresh_task = self._track_background_task(
+            loop.create_task(self._debounced_worker_health_refresh())
         )
 
     async def _debounced_worker_health_refresh(self) -> None:
