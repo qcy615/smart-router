@@ -37,6 +37,18 @@ class SmartRouterConfig:
     prefill_policy_config: PolicyConfig = field(default_factory=PolicyConfig)
     decode_policy_config: PolicyConfig = field(default_factory=PolicyConfig)
 
+    kv_events_enabled: bool = False
+    kv_events_port: int = 5557
+    kv_events_topic: str = ""
+    kv_events_endpoints: Optional[List[str]] = None
+
+    tokenizer: Optional[str] = None
+    tokenizer_trust_remote_code: bool = False
+    tokenize_url: Optional[str] = None
+    tokenize_timeout: float = 10.0
+    tokenize_cache_size: int = 4096
+    tokenize_cache_ttl: float = 3600.0
+
 
 def _validate_k8s_discovery_config(config: K8SDiscoveryConfig) -> None:
     if not config.enabled:
@@ -126,4 +138,15 @@ def build_config(args: Namespace) -> SmartRouterConfig:
         decode_policy_config=decode_policy_config if decode_policy_config else policy_config,
         prefill_policy_config=prefill_policy_config if prefill_policy_config else policy_config,
         policy_config=policy_config,
+        kv_events_enabled=getattr(args, "kv_events_enabled", False),
+        kv_events_port=getattr(args, "kv_events_port", 5557),
+        kv_events_topic=getattr(args, "kv_events_topic", ""),
+        kv_events_endpoints=getattr(args, "kv_events_endpoints", None),
+        tokenizer=getattr(args, "tokenizer", None),
+        tokenizer_trust_remote_code=getattr(
+            args, "tokenizer_trust_remote_code", False),
+        tokenize_url=getattr(args, "tokenize_url", None),
+        tokenize_timeout=getattr(args, "tokenize_timeout", 10.0),
+        tokenize_cache_size=getattr(args, "tokenize_cache_size", 4096),
+        tokenize_cache_ttl=getattr(args, "tokenize_cache_ttl", 3600.0),
     )
