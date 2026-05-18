@@ -2,7 +2,14 @@
 import argparse
 
 
-SUPPORT_POLICIES = ["round_robin", "power_of_two", "prefix_aware", "consistent_hash", "minimum_load"]
+SUPPORT_POLICIES = [
+    "round_robin",
+    "power_of_two",
+    "prefix_aware",
+    "kv_event_prefix_aware",
+    "consistent_hash",
+    "minimum_load",
+]
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -109,6 +116,67 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--decode-prefix-cache-eviction-threshold-chars", type=int, default=2_000_000, help="Per-decode-worker prefix tree character high watermark for prefix-aware policy. Set <= 0 to disable eviction.")
     parser.add_argument("--decode-prefix-cache-eviction-target-chars", type=int, default=1_600_000, help="Per-decode-worker prefix tree character target after eviction for prefix-aware policy.")
     parser.add_argument("--decode-prefix-cache-eviction-interval-secs", type=float, default=30.0, help="Seconds between decode prefix-aware tree eviction checks.")
+
+    # vLLM KV cache events
+    parser.add_argument(
+        "--kv-events-enabled",
+        action="store_true",
+        help="Subscribe to vLLM KV cache events and mirror per-DP prefix cache state.",
+    )
+    parser.add_argument(
+        "--kv-events-port",
+        type=int,
+        default=5557,
+        help="Base vLLM KV event publisher port. Rank N uses port + N unless endpoints are provided.",
+    )
+    parser.add_argument(
+        "--kv-events-topic",
+        default="",
+        help="ZMQ topic for vLLM KV cache events.",
+    )
+    parser.add_argument(
+        "--kv-events-endpoints",
+        nargs="+",
+        help=(
+            "KV event endpoints. Provide one base endpoint per worker URL, or one "
+            "endpoint per DP rank. Base endpoints are expanded by intra-DP size."
+        ),
+    )
+
+    # token ids for KV event matching
+    parser.add_argument(
+        "--tokenizer",
+        default=None,
+        help="Local HuggingFace tokenizer name/path used if remote /tokenize is not configured or fails.",
+    )
+    parser.add_argument(
+        "--tokenizer-trust-remote-code",
+        action="store_true",
+        help="Pass trust_remote_code=True when loading the local tokenizer.",
+    )
+    parser.add_argument(
+        "--tokenize-url",
+        default=None,
+        help="vLLM /tokenize endpoint used to compute request token ids.",
+    )
+    parser.add_argument(
+        "--tokenize-timeout",
+        type=float,
+        default=10.0,
+        help="Timeout in seconds for remote /tokenize requests.",
+    )
+    parser.add_argument(
+        "--tokenize-cache-size",
+        type=int,
+        default=4096,
+        help="Maximum number of tokenized request entries kept in router memory.",
+    )
+    parser.add_argument(
+        "--tokenize-cache-ttl",
+        type=float,
+        default=3600.0,
+        help="Tokenization cache TTL in seconds.",
+    )
 
     # logging
     parser.add_argument(

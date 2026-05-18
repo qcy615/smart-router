@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from smart_router.engine.engine import Engine
 from smart_router.config import SmartRouterConfig
@@ -47,14 +47,30 @@ class SglangEngine(Engine):
 
         logger.info("registered workers: %s", self.worker_registry.get_all_urls())
 
-    def schedule_prefill(self, request_text: str, headers: Dict[str, str]) -> Optional[Worker]:
+    def schedule_prefill(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_token_ids: Optional[List[int]] = None,
+        schedule_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Worker]:
+        _ = request_token_ids
+        _ = schedule_context
         workers = self.worker_registry.get_healthy_by_type(WorkerType.PREFILL)
         prefill: Optional[Worker] = self.prefill_policy.select_worker(
             workers, request_text=request_text, headers=headers
         )
         return prefill
 
-    def schedule_decode(self, request_text: str, headers: Dict[str, str]) -> Optional[Worker]:
+    def schedule_decode(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_token_ids: Optional[List[int]] = None,
+        schedule_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Worker]:
+        _ = request_token_ids
+        _ = schedule_context
         workers = self.worker_registry.get_healthy_by_type(WorkerType.DECODE)
         decode: Optional[Worker] = self.decode_policy.select_worker(
             workers, request_text=request_text, headers=headers

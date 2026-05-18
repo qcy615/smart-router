@@ -12,7 +12,7 @@ class Policy(ABC):
         return "round_robin"
 
     @abstractmethod
-    def select_worker(self, workers: List[Worker], *args) -> Optional[Worker]:
+    def select_worker(self, workers: List[Worker], *args, **kwargs) -> Optional[Worker]:
         """Select a worker from the list of available workers."""
         raise NotImplementedError("select_worker method must be implemented by subclasses")
     
@@ -44,5 +44,8 @@ def get_policy_config(config: PolicyConfig) -> Policy:
     elif policy_name == "prefix_aware":
         from smart_router.policies.prefix_aware import PrefixAwarePolicy
         return PrefixAwarePolicy(config)
+    elif policy_name == "kv_event_prefix_aware":
+        from smart_router.policies.kv_event_prefix_aware import KVEventPrefixAwarePolicy
+        return KVEventPrefixAwarePolicy(config)
     else:
         raise ValueError(f"Unknown policy name: {policy_name}")
