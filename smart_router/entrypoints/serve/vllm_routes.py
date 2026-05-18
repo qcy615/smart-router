@@ -16,14 +16,20 @@ from smart_router.engine.engine import (
     EngineWorkersResponse,
     RequestType,
 )
+from smart_router.config.smart_router import UpstreamHTTPClientConfig
+from smart_router.entrypoints.serve.http_client import build_upstream_http_client
 
 
 logger = logging.getLogger(__name__)
 
 class VllmRoutes:
-    def __init__(self, http_client: Any | None = None):
+    def __init__(
+        self,
+        http_client: Any | None = None,
+        http_client_config: UpstreamHTTPClientConfig | None = None,
+    ):
         # Shared async HTTP client for forwarding requests.
-        self.http_client = http_client or httpx.AsyncClient(timeout=60 * 60.0)
+        self.http_client = http_client or build_upstream_http_client(http_client_config)
 
     async def close(self) -> None:
         if hasattr(self.http_client, "aclose"):

@@ -8,7 +8,9 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from smart_router.config.smart_router import UpstreamHTTPClientConfig
 from smart_router.engine.engine import EngineRequest, EngineResponse, RequestType
+from smart_router.entrypoints.serve.http_client import build_upstream_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +22,14 @@ class NormalRoutes:
     worker without any prefill/decode split or bootstrap injection.
     """
 
-    def __init__(self, router_type: str = "sglang", http_client: Any | None = None):
+    def __init__(
+        self,
+        router_type: str = "sglang",
+        http_client: Any | None = None,
+        http_client_config: UpstreamHTTPClientConfig | None = None,
+    ):
         self.router_type = router_type
-        self.http_client = http_client or httpx.AsyncClient(timeout=60 * 60.0)
+        self.http_client = http_client or build_upstream_http_client(http_client_config)
 
     async def close(self) -> None:
         if hasattr(self.http_client, "aclose"):
