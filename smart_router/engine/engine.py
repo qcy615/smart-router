@@ -11,6 +11,7 @@ from smart_router.engine.utils import make_zmq_socket
 from smart_router.worker import Worker, WorkerRegistry, WorkerType
 
 logger = logging.getLogger(__name__)
+K8S_HEALTH_REFRESH_DEBOUNCE_SECS = 1.0
 
 is_linux = platform.system() == "Linux"
 if is_linux:
@@ -113,6 +114,8 @@ class EngineHealthResponse:
     prefill_total: int
     decode_healthy: int
     decode_total: int
+    regular_healthy: int = 0
+    regular_total: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EngineHealthResponse":
@@ -123,6 +126,8 @@ class EngineHealthResponse:
             prefill_total=data.get("prefill_total", 0),
             decode_healthy=data.get("decode_healthy", 0),
             decode_total=data.get("decode_total", 0),
+            regular_healthy=data.get("regular_healthy", 0),
+            regular_total=data.get("regular_total", 0),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -133,6 +138,8 @@ class EngineHealthResponse:
             "prefill_total": self.prefill_total,
             "decode_healthy": self.decode_healthy,
             "decode_total": self.decode_total,
+            "regular_healthy": self.regular_healthy,
+            "regular_total": self.regular_total,
             "response_type": RequestType.HEALTH,
         }
 
@@ -176,6 +183,9 @@ class Engine:
         self.worker_registry: WorkerRegistry = WorkerRegistry()
         self._health_check_lock = asyncio.Lock()
         self._background_tasks: set[asyncio.Task] = set()
+        self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._debounced_health_refresh_task: asyncio.Task | None = None
+        self._health_refresh_debounce_secs = K8S_HEALTH_REFRESH_DEBOUNCE_SECS
         self.worker_discovery = None
 
 
@@ -314,14 +324,18 @@ class Engine:
         counts = self.worker_registry.health_counts_by_type()
         prefill_healthy, prefill_total = counts.get(WorkerType.PREFILL, (0, 0))
         decode_healthy, decode_total = counts.get(WorkerType.DECODE, (0, 0))
-        status = (
-            "ok"
-            if prefill_healthy > 0
-            and prefill_total > 0
-            and decode_healthy > 0
-            and decode_total > 0
-            else "unhealthy"
-        )
+        regular_healthy, regular_total = counts.get(WorkerType.REGULAR, (0, 0))
+        has_pd_workers = prefill_total > 0 or decode_total > 0
+        if has_pd_workers:
+            healthy = (
+                prefill_healthy > 0
+                and prefill_total > 0
+                and decode_healthy > 0
+                and decode_total > 0
+            )
+        else:
+            healthy = regular_healthy > 0 and regular_total > 0
+        status = "ok" if healthy else "unhealthy"
         return EngineHealthResponse(
             request_id=request_id,
             status=status,
@@ -329,6 +343,8 @@ class Engine:
             prefill_total=prefill_total,
             decode_healthy=decode_healthy,
             decode_total=decode_total,
+            regular_healthy=regular_healthy,
+            regular_total=regular_total,
         )
 
     def get_worker_base_urls(self) -> List[str]:
@@ -353,8 +369,58 @@ class Engine:
         self.worker_discovery = K8SPodDiscovery(
             config,
             self.worker_registry,
+            on_workers_added=self.request_debounced_health_refresh,
             on_workers_removed=self._remove_workers_from_policies,
         )
+
+    def request_debounced_health_refresh(
+        self, worker_ids: List[str] | None = None
+    ) -> None:
+        if worker_ids:
+            logger.info(
+                "Scheduling debounced health refresh for new K8S workers: %s",
+                worker_ids,
+            )
+
+        loop = self._event_loop
+        if loop is None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                logger.debug(
+                    "Skipping debounced health refresh; event loop is not running"
+                )
+                return
+            self._event_loop = loop
+
+        if loop.is_closed():
+            return
+
+        loop.call_soon_threadsafe(self._schedule_debounced_health_refresh)
+
+    def _schedule_debounced_health_refresh(self) -> None:
+        current = self._debounced_health_refresh_task
+        if current is not None and not current.done():
+            current.cancel()
+
+        task = asyncio.create_task(self._debounced_health_refresh())
+        self._debounced_health_refresh_task = task
+        self._background_tasks.add(task)
+        task.add_done_callback(self._finish_debounced_health_refresh)
+
+    def _finish_debounced_health_refresh(self, task: asyncio.Task) -> None:
+        if self._debounced_health_refresh_task is task:
+            self._debounced_health_refresh_task = None
+        self._background_tasks.discard(task)
+
+    async def _debounced_health_refresh(self) -> None:
+        try:
+            await asyncio.sleep(self._health_refresh_debounce_secs)
+            await self.refresh_worker_health()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Debounced worker health refresh failed")
 
     def _remove_workers_from_policies(self, worker_ids: List[str]) -> None:
         for policy in (
@@ -397,6 +463,7 @@ class Engine:
         prefill_loop: prefill_waiting_queue -> request -> handle prefill -> decode_waiting_queue
         decode_loop: decode_waiting_queue -> request -> handle decode
         """
+        self._event_loop = asyncio.get_running_loop()
         tasks = []
         if self.worker_discovery is not None:
             await self.worker_discovery.sync_once()
@@ -424,6 +491,13 @@ class Engine:
         self.output_socket.close(0)
         if self.worker_discovery is not None:
             self.worker_discovery.stop()
+        task = getattr(self, "_debounced_health_refresh_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         self._stop_policies()
 
     def _stop_policies(self) -> None:

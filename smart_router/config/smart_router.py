@@ -10,6 +10,7 @@ class K8SDiscoveryConfig:
     enabled: bool = False
     prefill_port: Optional[int] = None
     decode_port: Optional[int] = None
+    regular_port: Optional[int] = None
     namespace: Optional[str] = None
     task_label_key: str = "task_id"
     task_id: Optional[str] = None
@@ -50,15 +51,22 @@ class SmartRouterConfig:
     tokenize_cache_ttl: float = 3600.0
 
 
-def _validate_k8s_discovery_config(config: K8SDiscoveryConfig) -> None:
+def _validate_k8s_discovery_config(
+    config: K8SDiscoveryConfig,
+    *,
+    pd_disaggregation: bool,
+) -> None:
     if not config.enabled:
         return
 
     missing = []
-    if config.prefill_port is None:
-        missing.append("--k8s-prefill-port")
-    if config.decode_port is None:
-        missing.append("--k8s-decode-port")
+    if pd_disaggregation:
+        if config.prefill_port is None:
+            missing.append("--k8s-prefill-port")
+        if config.decode_port is None:
+            missing.append("--k8s-decode-port")
+    elif config.regular_port is None:
+        missing.append("--k8s-regular-port")
     if missing:
         raise RuntimeError(
             "K8S discovery requires " + " and ".join(missing)
@@ -67,8 +75,9 @@ def _validate_k8s_discovery_config(config: K8SDiscoveryConfig) -> None:
     for name, port in (
         ("--k8s-prefill-port", config.prefill_port),
         ("--k8s-decode-port", config.decode_port),
+        ("--k8s-regular-port", config.regular_port),
     ):
-        if port is None or port <= 0 or port > 65535:
+        if port is not None and (port <= 0 or port > 65535):
             raise RuntimeError(f"{name} must be between 1 and 65535")
 
 def build_config(args: Namespace) -> SmartRouterConfig:
@@ -114,12 +123,16 @@ def build_config(args: Namespace) -> SmartRouterConfig:
         enabled=getattr(args, "enable_k8s_discovery", False),
         prefill_port=getattr(args, "k8s_prefill_port", None),
         decode_port=getattr(args, "k8s_decode_port", None),
+        regular_port=getattr(args, "k8s_regular_port", None),
         namespace=getattr(args, "k8s_namespace", None),
         task_label_key=getattr(args, "k8s_task_label_key", "task_id"),
         task_id=getattr(args, "k8s_task_id", None),
         url_scheme=getattr(args, "k8s_url_scheme", "http"),
     )
-    _validate_k8s_discovery_config(k8s_discovery_config)
+    _validate_k8s_discovery_config(
+        k8s_discovery_config,
+        pd_disaggregation=args.pd_disaggregation,
+    )
 
     return SmartRouterConfig(
         router_type=args.router_type,

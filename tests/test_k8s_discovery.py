@@ -1,7 +1,9 @@
+import asyncio
 from types import SimpleNamespace
 
 from smart_router.config import K8SDiscoveryConfig, SmartRouterConfig
 from smart_router.discovery import K8SPodDiscovery
+from smart_router.engine.engine import Engine
 from smart_router.worker import BasicWorker, WorkerRegistry, WorkerType
 
 
@@ -71,6 +73,7 @@ def _config(**overrides):
         "enabled": True,
         "prefill_port": 8100,
         "decode_port": 8200,
+        "regular_port": 8300,
         "task_id": "task-a",
     }
     values.update(overrides)
@@ -89,6 +92,7 @@ def test_k8s_discovery_sync_registers_only_serving_worker_pods():
             _pod("router", "router-uid", env={"WORKERTYPE": "PREFILL"}),
             _pod("prefill", "prefill-uid", pod_ip="10.0.0.2", env={"WORKERTYPE": "PREFILL"}),
             _pod("decode", "decode-uid", pod_ip="fd00::1", env={"WORKERTYPE": "decode"}),
+            _pod("regular", "regular-uid", pod_ip="10.0.0.3", env={"WORKERTYPE": "regular"}),
             _pod("headless", "headless-uid", env={"WORKERTYPE": "PREFILL", "HEADLESS": "true"}),
             _pod("pending", "pending-uid", phase="Pending", env={"WORKERTYPE": "DECODE"}),
             _pod("invalid", "invalid-uid", env={"WORKERTYPE": "OTHER"}),
@@ -108,7 +112,10 @@ def test_k8s_discovery_sync_registers_only_serving_worker_pods():
         "http://10.0.0.2:8100@0",
         "http://10.0.0.2:8100@1",
         "http://[fd00::1]:8200",
+        "http://10.0.0.3:8300",
     ]
+    assert registry.get_by_type(WorkerType.REGULAR)[0].base_url() == "http://10.0.0.3:8300"
+    assert all(not worker.is_healthy() for worker in registry.get_all())
     assert core.list_calls[0]["label_selector"] == "task_id=task-a"
 
 
@@ -168,6 +175,60 @@ def test_k8s_discovery_watch_adds_modifies_and_deletes_workers():
     assert registry.get_all_urls() == []
     assert removed == ["http://10.0.0.2:8100@0", "http://10.0.0.2:8100@1"]
     assert watcher.kwargs["resource_version"] is None
+
+
+def test_k8s_discovery_notifies_added_workers_once_and_starts_unhealthy():
+    registry = WorkerRegistry()
+    added = []
+    prefill = _pod(
+        "prefill",
+        "prefill-uid",
+        pod_ip="10.0.0.2",
+        env={"WORKERTYPE": "PREFILL"},
+    )
+    discovery = K8SPodDiscovery(
+        _config(),
+        registry,
+        on_workers_added=added.extend,
+        core_v1=FakeCoreV1([]),
+        watch_factory=lambda: FakeWatch([]),
+        env={"HOSTNAME": "router"},
+    )
+
+    discovery.apply_pod(prefill)
+    discovery.apply_pod(prefill)
+
+    assert added == ["http://10.0.0.2:8100@0", "http://10.0.0.2:8100@1"]
+    assert all(not worker.is_healthy() for worker in registry.get_all())
+
+
+def test_engine_debounces_discovery_health_refresh_requests():
+    class TestEngine(Engine):
+        def __init__(self):
+            self._event_loop = None
+            self._background_tasks = set()
+            self._debounced_health_refresh_task = None
+            self._health_refresh_debounce_secs = 0.01
+            self.refresh_calls = 0
+            self.refreshed = asyncio.Event()
+
+        async def refresh_worker_health(self, request_id=""):
+            self.refresh_calls += 1
+            self.refreshed.set()
+
+    async def run():
+        engine = TestEngine()
+        engine._event_loop = asyncio.get_running_loop()
+
+        engine.request_debounced_health_refresh(["worker-a"])
+        engine.request_debounced_health_refresh(["worker-b"])
+
+        await asyncio.wait_for(engine.refreshed.wait(), timeout=1)
+        await asyncio.sleep(0.02)
+
+        assert engine.refresh_calls == 1
+
+    asyncio.run(run())
 
 
 def test_worker_registry_register_is_idempotent_for_same_worker_id():

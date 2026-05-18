@@ -1,10 +1,11 @@
-from types import SimpleNamespace
-
+from smart_router.config import SmartRouterConfig
 from smart_router.entrypoints.serve import api_server
 
 
 def test_vllm_app_registers_completions_route():
-    app = api_server._build_app(SimpleNamespace(router_type="vllm-pd-disagg"))
+    app = api_server._build_app(
+        SmartRouterConfig(router_type="vllm", pd_disaggregation=True)
+    )
 
     route_paths = {route.path for route in app.routes}
 

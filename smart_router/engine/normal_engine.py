@@ -35,7 +35,7 @@ class NormalEngine(Engine):
         self.policy: Policy = get_policy_config(config.policy_config)
 
         # Initialize regular workers.
-        for url in config.worker_urls:
+        for url in config.worker_urls or []:
             register_workers_for_url(self.worker_registry, url, WorkerType.REGULAR, config)
 
         self.configure_worker_discovery(config)
@@ -72,6 +72,20 @@ class NormalEngine(Engine):
             request = await self.waiting_queue.get()
             logger.debug(f"Processing normal schedule for request: {request.request_id}")
             worker = self.schedule_worker(request.request_text, request.headers)
+            if worker is None:
+                resp = EngineResponse(
+                    request_id=request.request_id,
+                    worker_url="",
+                    worker_rank=-1,
+                    prefill_url="",
+                    prefill_rank=-1,
+                    decode_url="",
+                    decode_rank=-1,
+                    error="No available workers",
+                )
+                await self.send_response(request, resp.to_dict())
+                continue
+
             worker.increment_load()
             resp = EngineResponse(
                 request_id=request.request_id,

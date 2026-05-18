@@ -44,10 +44,13 @@ def test_k8s_discovery_cli_builds_config():
     args = build_parser().parse_args(
         [
             "--enable-k8s-discovery",
+            "--pd-disaggregation",
             "--k8s-prefill-port",
             "8100",
             "--k8s-decode-port",
             "8200",
+            "--k8s-regular-port",
+            "8300",
             "--k8s-namespace",
             "inference",
             "--k8s-task-label-key",
@@ -64,14 +67,28 @@ def test_k8s_discovery_cli_builds_config():
     assert config.k8s_discovery_config.enabled is True
     assert config.k8s_discovery_config.prefill_port == 8100
     assert config.k8s_discovery_config.decode_port == 8200
+    assert config.k8s_discovery_config.regular_port == 8300
     assert config.k8s_discovery_config.namespace == "inference"
     assert config.k8s_discovery_config.task_label_key == "task"
     assert config.k8s_discovery_config.task_id == "abc"
     assert config.k8s_discovery_config.url_scheme == "https"
 
 
-def test_k8s_discovery_requires_worker_ports():
+def test_k8s_discovery_requires_regular_port_in_normal_mode():
     args = build_parser().parse_args(["--enable-k8s-discovery"])
+
+    try:
+        build_config(args)
+    except RuntimeError as exc:
+        assert "--k8s-regular-port" in str(exc)
+    else:
+        raise AssertionError("build_config should reject missing discovery ports")
+
+
+def test_k8s_discovery_requires_prefill_and_decode_ports_in_pd_mode():
+    args = build_parser().parse_args(
+        ["--enable-k8s-discovery", "--pd-disaggregation"]
+    )
 
     try:
         build_config(args)
@@ -80,6 +97,21 @@ def test_k8s_discovery_requires_worker_ports():
         assert "--k8s-decode-port" in str(exc)
     else:
         raise AssertionError("build_config should reject missing discovery ports")
+
+
+def test_k8s_discovery_normal_mode_cli_builds_regular_port_config():
+    args = build_parser().parse_args(
+        [
+            "--enable-k8s-discovery",
+            "--k8s-regular-port",
+            "8300",
+        ]
+    )
+
+    config = build_config(args)
+
+    assert config.pd_disaggregation is False
+    assert config.k8s_discovery_config.regular_port == 8300
 
 
 def test_prefix_cache_eviction_global_cli_builds_policy_config():

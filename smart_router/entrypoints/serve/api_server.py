@@ -219,16 +219,18 @@ async def health(request):
         )
 
     status_code = 200 if resp.status == "ok" else 503
-    return JSONResponse(
-        {
-            "status": resp.status,
-            "prefill_healthy": resp.prefill_healthy,
-            "prefill_total": resp.prefill_total,
-            "decode_healthy": resp.decode_healthy,
-            "decode_total": resp.decode_total,
-        },
-        status_code=status_code,
-    )
+    body = {
+        "status": resp.status,
+        "prefill_healthy": resp.prefill_healthy,
+        "prefill_total": resp.prefill_total,
+        "decode_healthy": resp.decode_healthy,
+        "decode_total": resp.decode_total,
+    }
+    if resp.regular_total > 0:
+        body["regular_healthy"] = resp.regular_healthy
+        body["regular_total"] = resp.regular_total
+
+    return JSONResponse(body, status_code=status_code)
 
 
 def _init_app():

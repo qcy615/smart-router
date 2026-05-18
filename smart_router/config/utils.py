@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--enable-k8s-discovery",
         action="store_true",
-        help="Discover prefill/decode workers from Kubernetes pods.",
+        help="Discover workers from Kubernetes pods.",
     )
     parser.add_argument(
         "--k8s-prefill-port",
@@ -38,6 +38,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--k8s-decode-port",
         type=int,
         help="Port used to build discovered decode worker URLs.",
+    )
+    parser.add_argument(
+        "--k8s-regular-port",
+        type=int,
+        help="Port used to build discovered regular worker URLs in non-PD mode.",
     )
     parser.add_argument(
         "--k8s-namespace",

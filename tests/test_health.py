@@ -1,7 +1,5 @@
 import asyncio
 import logging
-from types import SimpleNamespace
-
 import httpx
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -135,6 +133,44 @@ def test_engine_health_response_requires_one_healthy_prefill_and_decode(monkeypa
         assert response.status == "unhealthy"
         assert response.decode_healthy == 0
         assert "http://decode-a" in caplog.text
+
+    asyncio.run(run())
+
+
+def test_engine_health_response_uses_regular_workers_for_normal_mode(monkeypatch):
+    fake_client = FakeWorkerClient(
+        {
+            "http://regular-a/health": httpx.Response(200),
+            "http://regular-b/health": httpx.Response(503),
+        }
+    )
+    monkeypatch.setattr("smart_router.worker.basic_worker.WORKER_CLIENT", fake_client)
+
+    async def run():
+        engine = object.__new__(Engine)
+        engine.worker_registry = WorkerRegistry()
+        engine._health_check_lock = asyncio.Lock()
+        engine.worker_registry.register(
+            BasicWorker("http://regular-a", WorkerType.REGULAR, _config())
+        )
+        engine.worker_registry.register(
+            BasicWorker("http://regular-b", WorkerType.REGULAR, _config())
+        )
+
+        response = await engine.refresh_worker_health(request_id="health-regular-1")
+
+        assert response.status == "ok"
+        assert response.regular_healthy == 1
+        assert response.regular_total == 2
+        assert response.prefill_total == 0
+        assert response.decode_total == 0
+
+        fake_client.responses["http://regular-a/health"] = httpx.Response(503)
+        response = await engine.refresh_worker_health(request_id="health-regular-2")
+
+        assert response.status == "unhealthy"
+        assert response.regular_healthy == 0
+        assert response.regular_total == 2
 
     asyncio.run(run())
 
@@ -334,10 +370,45 @@ def test_api_health_route_returns_engine_health_status():
     }
 
 
+def test_api_health_route_includes_regular_counts_for_normal_mode():
+    class FakeEngineClient:
+        identity = "test-client"
+
+        async def send_request(self, request):
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+            future.set_result(
+                EngineHealthResponse(
+                    request_id=request.request_id,
+                    status="ok",
+                    prefill_healthy=0,
+                    prefill_total=0,
+                    decode_healthy=0,
+                    decode_total=0,
+                    regular_healthy=1,
+                    regular_total=2,
+                )
+            )
+            return future
+
+    app = Starlette(routes=[Route("/health", api_server.health, methods=["GET"])])
+    app.state.engine_client = FakeEngineClient()
+    app.state.health_timeout_secs = 1
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["regular_healthy"] == 1
+    assert response.json()["regular_total"] == 2
+
+
 def test_api_health_route_registered_for_vllm_and_sglang_apps():
-    vllm_app = api_server._build_app(SimpleNamespace(router_type="vllm-pd-disagg"))
+    vllm_app = api_server._build_app(
+        SmartRouterConfig(router_type="vllm", pd_disaggregation=True)
+    )
     sglang_app = api_server._build_app(
-        SimpleNamespace(router_type="sglang-pd-disagg", prefill_bootstrap_ports=[])
+        SmartRouterConfig(router_type="sglang", pd_disaggregation=True)
     )
 
     assert "/health" in {route.path for route in vllm_app.routes}

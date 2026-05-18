@@ -123,6 +123,7 @@ class VLLMEngine(Engine):
                 setter(self.kv_cache_state)
 
     async def run(self):
+        self._event_loop = asyncio.get_running_loop()
         tasks = []
         try:
             if self.worker_discovery is not None:
