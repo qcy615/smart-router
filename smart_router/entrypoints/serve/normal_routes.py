@@ -92,18 +92,14 @@ class NormalRoutes:
             worker_url, worker_rank, endpoint_path, stream,
         )
 
-        try:
-            if stream:
-                return await self._handle_stream_request(
-                    body, headers, worker_url, worker_rank, endpoint_path,
-                )
-            else:
-                return await self._handle_non_stream_request(
-                    body, headers, worker_url, worker_rank, endpoint_path,
-                )
-        finally:
-            if worker_url:
-                await self._decrement_worker(request, worker_url, worker_rank)
+        if stream:
+            return await self._handle_stream_request(
+                request, body, headers, worker_url, worker_rank, endpoint_path,
+            )
+
+        return await self._handle_non_stream_request(
+            request, body, headers, worker_url, worker_rank, endpoint_path,
+        )
 
     async def _schedule_worker(
             self, request: Request, request_text: str, headers: Dict[str, str]
@@ -154,6 +150,7 @@ class NormalRoutes:
 
     async def _handle_non_stream_request(
             self,
+            request: Request,
             body: Dict[str, Any],
             headers: Dict[str, str],
             worker_url: str,
@@ -174,14 +171,17 @@ class NormalRoutes:
                 {"error": f"Connection to upstream failed: {e}"},
                 status_code=502,
             )
+        else:
+            if not response.is_success:
+                return await self._build_upstream_error_response(response)
 
-        if not response.is_success:
-            return await self._build_upstream_error_response(response)
-
-        return JSONResponse(response.json(), status_code=response.status_code)
+            return JSONResponse(response.json(), status_code=response.status_code)
+        finally:
+            await self._decrement_worker(request, worker_url, worker_rank)
 
     async def _handle_stream_request(
             self,
+            request: Request,
             body: Dict[str, Any],
             headers: Dict[str, str],
             worker_url: str,
@@ -216,6 +216,8 @@ class NormalRoutes:
             except httpx.RequestError as e:
                 logger.error("Normal mode stream: connection to %s failed: %s", worker_url, e)
                 yield f"data: {json.dumps({'error': f'Connection to upstream failed: {e}'})}\n\n".encode("utf-8")
+            finally:
+                await self._decrement_worker(request, worker_url, worker_rank)
 
         return StreamingResponse(stream_response(), media_type="text/event-stream")
 
