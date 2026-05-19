@@ -74,6 +74,46 @@ def test_k8s_discovery_cli_builds_config():
     assert config.k8s_discovery_config.url_scheme == "https"
 
 
+def test_upstream_http_client_cli_builds_config():
+    args = build_parser().parse_args(
+        [
+            "--upstream-connect-timeout-sec",
+            "2.5",
+            "--upstream-read-timeout-sec",
+            "120",
+            "--upstream-write-timeout-sec",
+            "15",
+            "--upstream-pool-timeout-sec",
+            "0.5",
+            "--upstream-max-connections",
+            "512",
+            "--upstream-max-keepalive-connections",
+            "128",
+            "--upstream-keepalive-expiry-sec",
+            "20",
+        ]
+    )
+
+    config = build_config(args)
+
+    upstream_config = config.upstream_http_client_config
+    assert upstream_config.connect_timeout_secs == 2.5
+    assert upstream_config.read_timeout_secs == 120
+    assert upstream_config.write_timeout_secs == 15
+    assert upstream_config.pool_timeout_secs == 0.5
+    assert upstream_config.max_connections == 512
+    assert upstream_config.max_keepalive_connections == 128
+    assert upstream_config.keepalive_expiry_secs == 20
+
+
+def test_upstream_http_client_default_read_timeout_is_disabled():
+    args = build_parser().parse_args([])
+
+    config = build_config(args)
+
+    assert config.upstream_http_client_config.read_timeout_secs is None
+
+
 def test_k8s_discovery_requires_regular_port_in_normal_mode():
     args = build_parser().parse_args(["--enable-k8s-discovery"])
 

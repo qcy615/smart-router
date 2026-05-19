@@ -94,10 +94,13 @@ def _build_app(config):
     """Build Starlette app with routes based on router_type and pd_disaggregation."""
     router_type = config.router_type
     pd_disaggregation = config.pd_disaggregation
+    upstream_http_client_config = getattr(config, "upstream_http_client_config", None)
 
     if router_type == "sglang" and pd_disaggregation:
         sglang_routes = SGLangRoutes(config)
-        model_routes = VllmRoutes()
+        model_routes = VllmRoutes(
+            http_client_config=upstream_http_client_config
+        )
         routes = [
             Route("/health", health, methods=["GET"]),
             Route("/v1/models", model_routes.models, methods=["GET"]),
@@ -112,10 +115,13 @@ def _build_app(config):
             on_shutdown=[shutdown],
         )
         application.state.sglang_routes = sglang_routes
+        application.state.model_routes = model_routes
 
     elif pd_disaggregation:
         # vLLM PD disaggregation
-        vllm_routes = VllmRoutes()
+        vllm_routes = VllmRoutes(
+            http_client_config=upstream_http_client_config
+        )
         routes = [
             Route("/health", health, methods=["GET"]),
             Route("/v1/models", vllm_routes.models, methods=["GET"]),
@@ -132,8 +138,13 @@ def _build_app(config):
 
     else:
         # Non-PD mode: direct forwarding to workers
-        normal_routes = NormalRoutes(router_type=router_type)
-        model_routes = VllmRoutes()
+        normal_routes = NormalRoutes(
+            router_type=router_type,
+            http_client_config=upstream_http_client_config,
+        )
+        model_routes = VllmRoutes(
+            http_client_config=upstream_http_client_config
+        )
         routes = [
             Route("/health", health, methods=["GET"]),
             Route("/v1/models", model_routes.models, methods=["GET"]),
@@ -147,6 +158,7 @@ def _build_app(config):
             on_shutdown=[shutdown],
         )
         application.state.normal_routes = normal_routes
+        application.state.model_routes = model_routes
 
     health_config = getattr(config, "health_config", None)
     application.state.health_timeout_secs = getattr(health_config, "timeout_secs", 5) + 1
@@ -247,6 +259,11 @@ async def shutdown():
     if vllm_routes is not None:
         await vllm_routes.close()
         logger.info("VllmRoutes HTTP client closed")
+
+    model_routes = getattr(app.state, "model_routes", None)
+    if model_routes is not None:
+        await model_routes.close()
+        logger.info("ModelRoutes HTTP client closed")
 
     engine_client = getattr(app.state, "engine_client", None)
     if engine_client is None:

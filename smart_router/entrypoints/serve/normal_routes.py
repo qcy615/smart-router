@@ -8,7 +8,9 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
+from smart_router.config.smart_router import UpstreamHTTPClientConfig
 from smart_router.engine.engine import EngineRequest, EngineResponse, RequestType
+from smart_router.entrypoints.serve.http_client import build_upstream_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +22,14 @@ class NormalRoutes:
     worker without any prefill/decode split or bootstrap injection.
     """
 
-    def __init__(self, router_type: str = "sglang", http_client: Any | None = None):
+    def __init__(
+        self,
+        router_type: str = "sglang",
+        http_client: Any | None = None,
+        http_client_config: UpstreamHTTPClientConfig | None = None,
+    ):
         self.router_type = router_type
-        self.http_client = http_client or httpx.AsyncClient(timeout=60 * 60.0)
+        self.http_client = http_client or build_upstream_http_client(http_client_config)
 
     async def close(self) -> None:
         if hasattr(self.http_client, "aclose"):
@@ -92,18 +99,14 @@ class NormalRoutes:
             worker_url, worker_rank, endpoint_path, stream,
         )
 
-        try:
-            if stream:
-                return await self._handle_stream_request(
-                    body, headers, worker_url, worker_rank, endpoint_path,
-                )
-            else:
-                return await self._handle_non_stream_request(
-                    body, headers, worker_url, worker_rank, endpoint_path,
-                )
-        finally:
-            if worker_url:
-                await self._decrement_worker(request, worker_url, worker_rank)
+        if stream:
+            return await self._handle_stream_request(
+                request, body, headers, worker_url, worker_rank, endpoint_path,
+            )
+
+        return await self._handle_non_stream_request(
+            request, body, headers, worker_url, worker_rank, endpoint_path,
+        )
 
     async def _schedule_worker(
             self, request: Request, request_text: str, headers: Dict[str, str]
@@ -154,6 +157,7 @@ class NormalRoutes:
 
     async def _handle_non_stream_request(
             self,
+            request: Request,
             body: Dict[str, Any],
             headers: Dict[str, str],
             worker_url: str,
@@ -174,14 +178,17 @@ class NormalRoutes:
                 {"error": f"Connection to upstream failed: {e}"},
                 status_code=502,
             )
+        else:
+            if not response.is_success:
+                return await self._build_upstream_error_response(response)
 
-        if not response.is_success:
-            return await self._build_upstream_error_response(response)
-
-        return JSONResponse(response.json(), status_code=response.status_code)
+            return JSONResponse(response.json(), status_code=response.status_code)
+        finally:
+            await self._decrement_worker(request, worker_url, worker_rank)
 
     async def _handle_stream_request(
             self,
+            request: Request,
             body: Dict[str, Any],
             headers: Dict[str, str],
             worker_url: str,
@@ -216,6 +223,8 @@ class NormalRoutes:
             except httpx.RequestError as e:
                 logger.error("Normal mode stream: connection to %s failed: %s", worker_url, e)
                 yield f"data: {json.dumps({'error': f'Connection to upstream failed: {e}'})}\n\n".encode("utf-8")
+            finally:
+                await self._decrement_worker(request, worker_url, worker_rank)
 
         return StreamingResponse(stream_response(), media_type="text/event-stream")
 

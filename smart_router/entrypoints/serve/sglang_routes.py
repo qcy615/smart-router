@@ -15,6 +15,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from smart_router.engine.engine import EngineRequest, EngineResponse, RequestType
 from smart_router.config.smart_router import SmartRouterConfig
+from smart_router.entrypoints.serve.http_client import build_upstream_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +39,10 @@ class SGLangRoutes:
     allow the decode worker to retrieve KV cache from the prefill worker.
     """
 
-    def __init__(self, config: SmartRouterConfig):
-        self.http_client = httpx.AsyncClient(timeout=60 * 60.0)
+    def __init__(self, config: SmartRouterConfig, http_client: Any | None = None):
+        self.http_client = http_client or build_upstream_http_client(
+            getattr(config, "upstream_http_client_config", None)
+        )
         # bootstrap_ports: one port per prefill URL, for KV cache bootstrap
         self.bootstrap_ports = config.prefill_bootstrap_ports or []
         self.prefill_urls = config.prefill_urls
