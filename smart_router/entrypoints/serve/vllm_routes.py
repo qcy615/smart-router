@@ -432,16 +432,16 @@ class VllmRoutes:
         body: Dict[str, Any],
         headers: Dict[str, str],
         request_text: str,
-        request_token_ids: list[int],
         endpoint_path: str,
         api_kind: str,
+        request_token_ids: Optional[list[int]] = None,
     ) -> Response:
         context_or_response = await self._prepare_pd_context(
             request=request,
             body=body,
             headers=headers,
             request_text=request_text,
-            request_token_ids=request_token_ids,
+            request_token_ids=request_token_ids or [],
             endpoint_path=endpoint_path,
         )
         if isinstance(context_or_response, Response):

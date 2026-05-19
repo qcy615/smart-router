@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import inspect
 import zmq
 import zmq.asyncio
 from dataclasses import dataclass, field
@@ -229,15 +230,17 @@ class Engine:
             logger.debug(f"Processing prefill for request: {request.request_id}")
             # schedule
             schedule_context = self.build_schedule_context(request)
-            prefill_worker = self.schedule_prefill(
-                request.request_text,
-                request.headers,
+            prefill_worker = self._call_schedule_method(
+                self.schedule_prefill,
+                request_text=request.request_text,
+                headers=request.headers,
                 request_token_ids=request.request_token_ids,
                 schedule_context=schedule_context,
             )
-            decode_worker = self.schedule_decode(
-                request.request_text,
-                request.headers,
+            decode_worker = self._call_schedule_method(
+                self.schedule_decode,
+                request_text=request.request_text,
+                headers=request.headers,
                 request_token_ids=request.request_token_ids,
                 schedule_context=schedule_context,
             )
@@ -277,6 +280,26 @@ class Engine:
                 decode_rank=decode_worker.dp_rank(),
             )
             await self.send_response(request, resp.to_dict())
+
+    def _call_schedule_method(
+        self,
+        method,
+        *,
+        request_text: str,
+        headers: Dict[str, str],
+        request_token_ids: List[int],
+        schedule_context: Optional[Dict[str, Any]],
+    ) -> Optional[Worker]:
+        parameters = inspect.signature(method).parameters
+        kwargs: Dict[str, Any] = {
+            "request_text": request_text,
+            "headers": headers,
+        }
+        if "request_token_ids" in parameters:
+            kwargs["request_token_ids"] = request_token_ids
+        if "schedule_context" in parameters:
+            kwargs["schedule_context"] = schedule_context
+        return method(**kwargs)
 
     async def _handle_health_request(self, request: EngineRequest) -> None:
         try:
