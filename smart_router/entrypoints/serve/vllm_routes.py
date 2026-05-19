@@ -16,6 +16,8 @@ from smart_router.engine.engine import (
     EngineWorkersResponse,
     RequestType,
 )
+from smart_router.config.smart_router import UpstreamHTTPClientConfig
+from smart_router.entrypoints.serve.http_client import build_upstream_http_client
 from smart_router.tokenization import RouterTokenizerManager
 
 
@@ -27,9 +29,10 @@ class VllmRoutes:
         http_client: Any | None = None,
         tokenizer_manager: RouterTokenizerManager | None = None,
         enable_request_tokenization: bool = False,
+        http_client_config: UpstreamHTTPClientConfig | None = None,
     ):
         # Shared async HTTP client for forwarding requests.
-        self.http_client = http_client or httpx.AsyncClient(timeout=60 * 60.0)
+        self.http_client = http_client or build_upstream_http_client(http_client_config)
         self.tokenizer_manager = (
             tokenizer_manager or RouterTokenizerManager.from_env()
         )

@@ -25,6 +25,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds between full worker health checks.",
     )
     parser.add_argument(
+        "--upstream-connect-timeout-sec",
+        type=float,
+        default=5.0,
+        help="Seconds to wait when opening an upstream HTTP connection.",
+    )
+    parser.add_argument(
+        "--upstream-read-timeout-sec",
+        type=float,
+        default=0.0,
+        help="Seconds to wait for upstream response data. Set 0 to disable.",
+    )
+    parser.add_argument(
+        "--upstream-write-timeout-sec",
+        type=float,
+        default=30.0,
+        help="Seconds to wait while sending upstream request data.",
+    )
+    parser.add_argument(
+        "--upstream-pool-timeout-sec",
+        type=float,
+        default=1.0,
+        help="Seconds to wait for a free upstream HTTP connection from the pool.",
+    )
+    parser.add_argument(
+        "--upstream-max-connections",
+        type=int,
+        default=1024,
+        help="Maximum concurrent upstream HTTP connections per API server process.",
+    )
+    parser.add_argument(
+        "--upstream-max-keepalive-connections",
+        type=int,
+        default=256,
+        help="Maximum idle upstream HTTP keep-alive connections per API server process.",
+    )
+    parser.add_argument(
+        "--upstream-keepalive-expiry-sec",
+        type=float,
+        default=30.0,
+        help="Seconds before idle upstream HTTP keep-alive connections expire.",
+    )
+    parser.add_argument(
         "--enable-k8s-discovery",
         action="store_true",
         help="Discover workers from Kubernetes pods.",
