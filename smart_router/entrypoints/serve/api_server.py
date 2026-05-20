@@ -26,6 +26,7 @@ from smart_router.entrypoints.serve.vllm_routes import VllmRoutes
 from smart_router.entrypoints.serve.sglang_routes import SGLangRoutes
 from smart_router.entrypoints.serve.normal_routes import NormalRoutes
 from smart_router.logger import init_logging
+from smart_router.tokenization import RouterTokenizerConfig, RouterTokenizerManager
 
 logger =logging.getLogger(__name__)
 
@@ -56,6 +57,37 @@ def _load_model_source_urls() -> list[str]:
         return []
 
     return [url for url in urls if isinstance(url, str) and url]
+
+
+def _default_tokenize_url(prefill_urls: list[str] | None) -> Optional[str]:
+    for url in prefill_urls or []:
+        if url:
+            return f"{url.rstrip('/')}/tokenize"
+    return None
+
+
+def _build_tokenizer_manager(config) -> RouterTokenizerManager:
+    return RouterTokenizerManager(
+        RouterTokenizerConfig(
+            tokenizer=getattr(config, "tokenizer", None),
+            trust_remote_code=getattr(config, "tokenizer_trust_remote_code", False),
+            tokenize_url=(
+                getattr(config, "tokenize_url", None)
+                or _default_tokenize_url(getattr(config, "prefill_urls", None))
+            ),
+            tokenize_timeout=getattr(config, "tokenize_timeout", 10.0),
+            tokenize_cache_size=getattr(config, "tokenize_cache_size", 4096),
+            tokenize_cache_ttl=getattr(config, "tokenize_cache_ttl", 3600.0),
+        )
+    )
+
+
+def _uses_kv_event_policy(config) -> bool:
+    policy_names = {
+        getattr(getattr(config, "prefill_policy_config", None), "policy", ""),
+        getattr(getattr(config, "decode_policy_config", None), "policy", ""),
+    }
+    return "kv_event_prefix_aware" in policy_names
 
 
 def _get_zmq_addresses():
@@ -120,7 +152,9 @@ def _build_app(config):
     elif pd_disaggregation:
         # vLLM PD disaggregation
         vllm_routes = VllmRoutes(
-            http_client_config=upstream_http_client_config
+            tokenizer_manager=_build_tokenizer_manager(config),
+            enable_request_tokenization=_uses_kv_event_policy(config),
+            http_client_config=upstream_http_client_config,
         )
         routes = [
             Route("/health", health, methods=["GET"]),

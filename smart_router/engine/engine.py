@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import inspect
 import zmq
 import zmq.asyncio
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ class EngineRequest:
     # request_type: schedule
     request_text: str = field(default="")
     headers: Dict[str, str] = field(default_factory=dict)
+    request_token_ids: List[int] = field(default_factory=list)
     # request_type: release
     worker_url: str = field(default="")
     worker_rank: int = field(default=-1)
@@ -48,6 +50,7 @@ class EngineRequest:
             request_type=data["request_type"],
             request_text=data.get("request_text", ""),
             headers=data.get("headers", {}),
+            request_token_ids=data.get("request_token_ids", []),
             worker_url=data.get("worker_url", ""),
             worker_rank=data.get("worker_rank", -1),
         )
@@ -59,6 +62,7 @@ class EngineRequest:
             "request_type": self.request_type,
             "request_text": self.request_text,
             "headers": self.headers,
+            "request_token_ids": self.request_token_ids,
             "worker_url": self.worker_url,
             "worker_rank": self.worker_rank,
         }
@@ -225,8 +229,21 @@ class Engine:
             request = await self.waiting_queue.get()
             logger.debug(f"Processing prefill for request: {request.request_id}")
             # schedule
-            prefill_worker = self.schedule_prefill(request.request_text, request.headers)
-            decode_worker = self.schedule_decode(request.request_text, request.headers)
+            schedule_context = self.build_schedule_context(request)
+            prefill_worker = self._call_schedule_method(
+                self.schedule_prefill,
+                request_text=request.request_text,
+                headers=request.headers,
+                request_token_ids=request.request_token_ids,
+                schedule_context=schedule_context,
+            )
+            decode_worker = self._call_schedule_method(
+                self.schedule_decode,
+                request_text=request.request_text,
+                headers=request.headers,
+                request_token_ids=request.request_token_ids,
+                schedule_context=schedule_context,
+            )
 
             if prefill_worker is None:
                 resp = EngineResponse(
@@ -263,6 +280,26 @@ class Engine:
                 decode_rank=decode_worker.dp_rank(),
             )
             await self.send_response(request, resp.to_dict())
+
+    def _call_schedule_method(
+        self,
+        method,
+        *,
+        request_text: str,
+        headers: Dict[str, str],
+        request_token_ids: List[int],
+        schedule_context: Optional[Dict[str, Any]],
+    ) -> Optional[Worker]:
+        parameters = inspect.signature(method).parameters
+        kwargs: Dict[str, Any] = {
+            "request_text": request_text,
+            "headers": headers,
+        }
+        if "request_token_ids" in parameters:
+            kwargs["request_token_ids"] = request_token_ids
+        if "schedule_context" in parameters:
+            kwargs["schedule_context"] = schedule_context
+        return method(**kwargs)
 
     async def _handle_health_request(self, request: EngineRequest) -> None:
         try:
@@ -417,6 +454,10 @@ class Engine:
             if remover is not None:
                 remover(worker_ids)
 
+    def build_schedule_context(self, request: EngineRequest) -> Dict[str, Any]:
+        _ = request
+        return {}
+
     async def health_check_loop(self):
         while True:
             interval_secs = getattr(
@@ -495,10 +536,22 @@ class Engine:
             except Exception:
                 logger.exception("Failed to stop policy %s", policy)
 
-    def schedule_prefill(self, request_text: str, headers: Dict[str, str]) -> Optional[Worker]:
+    def schedule_prefill(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_token_ids: Optional[List[int]] = None,
+        schedule_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Worker]:
         raise NotImplementedError
     
-    def schedule_decode(self, request_text: str, headers: Dict[str, str]) -> Optional[Worker]:
+    def schedule_decode(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_token_ids: Optional[List[int]] = None,
+        schedule_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Worker]:
         raise NotImplementedError
     
     

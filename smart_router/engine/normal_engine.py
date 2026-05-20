@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from smart_router.engine.engine import Engine, EngineResponse
 from smart_router.config import SmartRouterConfig
@@ -42,11 +42,23 @@ class NormalEngine(Engine):
 
         logger.info("registered workers: %s", self.worker_registry.get_all_urls())
 
-    def schedule_prefill(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_prefill(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_token_ids: Optional[List[int]] = None,
+        schedule_context: Optional[Dict[str, Any]] = None,
+    ) -> Worker:
         """Not used in normal mode."""
         raise NotImplementedError("NormalEngine does not support schedule_prefill")
 
-    def schedule_decode(self, request_text: str, headers: Dict[str, str]) -> Worker:
+    def schedule_decode(
+        self,
+        request_text: str,
+        headers: Dict[str, str],
+        request_token_ids: Optional[List[int]] = None,
+        schedule_context: Optional[Dict[str, Any]] = None,
+    ) -> Worker:
         """Not used in normal mode."""
         raise NotImplementedError("NormalEngine does not support schedule_decode")
 

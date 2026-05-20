@@ -18,6 +18,7 @@ from smart_router.engine.engine import (
 )
 from smart_router.config.smart_router import UpstreamHTTPClientConfig
 from smart_router.entrypoints.serve.http_client import build_upstream_http_client
+from smart_router.tokenization import RouterTokenizerManager
 
 
 logger = logging.getLogger(__name__)
@@ -26,10 +27,22 @@ class VllmRoutes:
     def __init__(
         self,
         http_client: Any | None = None,
+        tokenizer_manager: RouterTokenizerManager | None = None,
+        enable_request_tokenization: bool = False,
         http_client_config: UpstreamHTTPClientConfig | None = None,
     ):
         # Shared async HTTP client for forwarding requests.
         self.http_client = http_client or build_upstream_http_client(http_client_config)
+        self.tokenizer_manager = (
+            tokenizer_manager or RouterTokenizerManager.from_env()
+        )
+        self.enable_request_tokenization = enable_request_tokenization
+
+    def set_tokenizer_manager(self, tokenizer_manager: RouterTokenizerManager) -> None:
+        self.tokenizer_manager = tokenizer_manager
+
+    def set_request_tokenization_enabled(self, enabled: bool) -> None:
+        self.enable_request_tokenization = enabled
 
     async def close(self) -> None:
         if hasattr(self.http_client, "aclose"):
@@ -177,11 +190,21 @@ class VllmRoutes:
         headers = self._sanitize_headers(request)
         stream = bool(body.get("stream", False))
         request_text = self._extract_request_text(body)
+        request_token_ids = await self._extract_request_token_ids(
+            body, "completions")
+        if self.enable_request_tokenization:
+            logger.info(
+                "[ROUTER-REQUEST] api_kind=completions stream=%s token_count=%d model=%s",
+                stream,
+                len(request_token_ids),
+                body.get("model"),
+            )
         return await self._handle_pd_request(
             request,
             body=body,
             headers=headers,
             request_text=request_text,
+            request_token_ids=request_token_ids,
             endpoint_path="/v1/completions",
             api_kind="completions",
             stream=stream,
@@ -192,11 +215,20 @@ class VllmRoutes:
         headers = self._sanitize_headers(request)
         stream = bool(body.get("stream", False))
         request_text = self._extract_request_text(body)
+        request_token_ids = await self._extract_request_token_ids(body, "chat")
+        if self.enable_request_tokenization:
+            logger.info(
+                "[ROUTER-REQUEST] api_kind=chat stream=%s token_count=%d model=%s",
+                stream,
+                len(request_token_ids),
+                body.get("model"),
+            )
         return await self._handle_pd_request(
             request,
             body=body,
             headers=headers,
             request_text=request_text,
+            request_token_ids=request_token_ids,
             endpoint_path="/v1/chat/completions",
             api_kind="chat",
             stream=stream,
@@ -208,6 +240,7 @@ class VllmRoutes:
         body: Dict[str, Any],
         headers: Dict[str, str],
         request_text: str,
+        request_token_ids: list[int],
         endpoint_path: str,
         api_kind: str,
         stream: bool,
@@ -224,6 +257,7 @@ class VllmRoutes:
                 body=body,
                 headers=headers,
                 request_text=request_text,
+                request_token_ids=request_token_ids,
                 endpoint_path=endpoint_path,
                 api_kind=api_kind,
             )
@@ -232,6 +266,7 @@ class VllmRoutes:
             body=body,
             headers=headers,
             request_text=request_text,
+            request_token_ids=request_token_ids,
             endpoint_path=endpoint_path,
             api_kind=api_kind,
         )
@@ -242,6 +277,7 @@ class VllmRoutes:
         body: Dict[str, Any],
         headers: Dict[str, str],
         request_text: str,
+        request_token_ids: list[int],
         endpoint_path: str,
     ) -> Dict[str, Any] | Response:
         engine_request = EngineRequest(
@@ -250,6 +286,7 @@ class VllmRoutes:
             request_text=request_text,
             request_type=RequestType.SCHEDULE,
             headers=headers,
+            request_token_ids=request_token_ids,
         )
         # send request to engine using engine_client
         fut: asyncio.Future = await request.app.state.engine_client.send_request(engine_request)
@@ -330,6 +367,7 @@ class VllmRoutes:
         body: Dict[str, Any],
         headers: Dict[str, str],
         request_text: str,
+        request_token_ids: list[int],
         endpoint_path: str,
         api_kind: str,
     ) -> Response:
@@ -339,6 +377,7 @@ class VllmRoutes:
             body=body,
             headers=headers,
             request_text=request_text,
+            request_token_ids=request_token_ids,
             endpoint_path=endpoint_path,
         )
         if isinstance(context_or_response, Response):
@@ -395,12 +434,14 @@ class VllmRoutes:
         request_text: str,
         endpoint_path: str,
         api_kind: str,
+        request_token_ids: Optional[list[int]] = None,
     ) -> Response:
         context_or_response = await self._prepare_pd_context(
             request=request,
             body=body,
             headers=headers,
             request_text=request_text,
+            request_token_ids=request_token_ids or [],
             endpoint_path=endpoint_path,
         )
         if isinstance(context_or_response, Response):
@@ -457,10 +498,13 @@ class VllmRoutes:
                             decode_response_stream.status_code,
                             error_text,
                         )
-                        yield (
-                            f"data: {json.dumps({'error': f'Decode server error '
-                            f'{decode_response_stream.status_code}: {error_text}'})}\n\n"
-                        )
+                        error_payload = {
+                            "error": (
+                                "Decode server error "
+                                f"{decode_response_stream.status_code}: {error_text}"
+                            )
+                        }
+                        yield f"data: {json.dumps(error_payload)}\n\n"
                         return
 
                     skipped_first_non_empty_token = False
@@ -519,6 +563,23 @@ class VllmRoutes:
         if "prompt" in body:
             return str(body["prompt"])
         return json.dumps(body, ensure_ascii=False)
+
+    async def _extract_request_token_ids(
+        self,
+        body: Dict[str, Any],
+        api_kind: str,
+    ) -> list[int]:
+        if not self.enable_request_tokenization:
+            return []
+        try:
+            return await self.tokenizer_manager.encode_request(body, api_kind)
+        except Exception:
+            logger.warning(
+                "Failed to compute request token ids api_kind=%s",
+                api_kind,
+                exc_info=True,
+            )
+            return []
 
     def _build_prefill_first_token_chunk(
         self, api_kind: str, prefill_response_json: Dict[str, Any]
