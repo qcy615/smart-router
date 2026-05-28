@@ -5,7 +5,12 @@ from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from smart_router.config import HealthConfig, SmartRouterConfig
+from smart_router.config import (
+    HealthConfig,
+    RouterModeConfig,
+    SmartRouterConfig,
+    WorkerGroupConfig,
+)
 from smart_router.engine.engine import (
     Engine,
     EngineHealthResponse,
@@ -31,8 +36,8 @@ class FakeWorkerClient:
 
 def _config() -> SmartRouterConfig:
     return SmartRouterConfig(
-        prefill_urls=[],
-        decode_urls=[],
+        prefill_worker_config=WorkerGroupConfig(urls=[]),
+        decode_worker_config=WorkerGroupConfig(urls=[]),
         health_config=HealthConfig(timeout_secs=1, check_interval_secs=60),
     )
 
@@ -405,10 +410,20 @@ def test_api_health_route_includes_regular_counts_for_normal_mode():
 
 def test_api_health_route_registered_for_vllm_and_sglang_apps():
     vllm_app = api_server._build_app(
-        SmartRouterConfig(router_type="vllm", pd_disaggregation=True)
+        SmartRouterConfig(
+            router_mode_config=RouterModeConfig(
+                router_type="vllm",
+                pd_disaggregation=True,
+            )
+        )
     )
     sglang_app = api_server._build_app(
-        SmartRouterConfig(router_type="sglang", pd_disaggregation=True)
+        SmartRouterConfig(
+            router_mode_config=RouterModeConfig(
+                router_type="sglang",
+                pd_disaggregation=True,
+            )
+        )
     )
 
     assert "/health" in {route.path for route in vllm_app.routes}

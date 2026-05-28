@@ -15,11 +15,11 @@ def build_workers_for_url(
     config: SmartRouterConfig,
 ) -> List[Worker]:
     if worker_type == WorkerType.PREFILL:
-        dp_size = config.prefill_intra_dp_size
+        dp_size = config.prefill_worker_config.intra_dp_size
     elif worker_type == WorkerType.DECODE:
-        dp_size = config.decode_intra_dp_size
+        dp_size = config.decode_worker_config.intra_dp_size
     else:
-        dp_size = config.worker_intra_dp_size
+        dp_size = config.worker_config.intra_dp_size
     if dp_size > 1:
         return [
             DPAwareWorker(url, worker_type, config, rank, dp_size)

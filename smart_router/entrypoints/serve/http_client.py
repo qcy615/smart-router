@@ -1,6 +1,6 @@
 import httpx
 
-from smart_router.config.smart_router import UpstreamHTTPClientConfig
+from smart_router.config.upstream_http import UpstreamHTTPClientConfig
 
 
 def build_upstream_http_client(

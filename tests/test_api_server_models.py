@@ -1,10 +1,15 @@
-from smart_router.config import SmartRouterConfig
+from smart_router.config import RouterModeConfig, SmartRouterConfig
 from smart_router.entrypoints.serve import api_server
 
 
 def test_vllm_app_registers_completions_route():
     app = api_server._build_app(
-        SmartRouterConfig(router_type="vllm", pd_disaggregation=True)
+        SmartRouterConfig(
+            router_mode_config=RouterModeConfig(
+                router_type="vllm",
+                pd_disaggregation=True,
+            )
+        )
     )
 
     route_paths = {route.path for route in app.routes}

@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from smart_router.config import K8SDiscoveryConfig, SmartRouterConfig
+from smart_router.config import K8SDiscoveryConfig, SmartRouterConfig, WorkerGroupConfig
 from smart_router.discovery import K8SPodDiscovery
 from smart_router.engine.engine import Engine
 from smart_router.worker import BasicWorker, WorkerRegistry, WorkerType
@@ -79,8 +79,8 @@ def _config(**overrides):
     values.update(overrides)
     discovery = K8SDiscoveryConfig(**values)
     return SmartRouterConfig(
-        prefill_intra_dp_size=2,
-        decode_intra_dp_size=1,
+        prefill_worker_config=WorkerGroupConfig(intra_dp_size=2),
+        decode_worker_config=WorkerGroupConfig(intra_dp_size=1),
         k8s_discovery_config=discovery,
     )
 

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import uvicorn
 
+from dataclasses import replace
 from multiprocessing import Process
 from typing import Optional
 
@@ -26,7 +27,7 @@ from smart_router.entrypoints.serve.vllm_routes import VllmRoutes
 from smart_router.entrypoints.serve.sglang_routes import SGLangRoutes
 from smart_router.entrypoints.serve.normal_routes import NormalRoutes
 from smart_router.logger import init_logging
-from smart_router.tokenization import RouterTokenizerConfig, RouterTokenizerManager
+from smart_router.tokenization import RouterTokenizerManager
 
 logger =logging.getLogger(__name__)
 
@@ -67,17 +68,15 @@ def _default_tokenize_url(prefill_urls: list[str] | None) -> Optional[str]:
 
 
 def _build_tokenizer_manager(config) -> RouterTokenizerManager:
+    tokenization_config = config.tokenization_config
+    tokenize_url = tokenization_config.tokenize_url or _default_tokenize_url(
+        config.prefill_worker_config.urls
+    )
+
     return RouterTokenizerManager(
-        RouterTokenizerConfig(
-            tokenizer=getattr(config, "tokenizer", None),
-            trust_remote_code=getattr(config, "tokenizer_trust_remote_code", False),
-            tokenize_url=(
-                getattr(config, "tokenize_url", None)
-                or _default_tokenize_url(getattr(config, "prefill_urls", None))
-            ),
-            tokenize_timeout=getattr(config, "tokenize_timeout", 10.0),
-            tokenize_cache_size=getattr(config, "tokenize_cache_size", 4096),
-            tokenize_cache_ttl=getattr(config, "tokenize_cache_ttl", 3600.0),
+        replace(
+            tokenization_config,
+            tokenize_url=tokenize_url,
         )
     )
 
@@ -124,9 +123,9 @@ app: Starlette
 
 def _build_app(config):
     """Build Starlette app with routes based on router_type and pd_disaggregation."""
-    router_type = config.router_type
-    pd_disaggregation = config.pd_disaggregation
-    upstream_http_client_config = getattr(config, "upstream_http_client_config", None)
+    router_type = config.router_mode_config.router_type
+    pd_disaggregation = config.router_mode_config.pd_disaggregation
+    upstream_http_client_config = config.upstream_http_client_config
 
     if router_type == "sglang" and pd_disaggregation:
         sglang_routes = SGLangRoutes(config)
@@ -329,7 +328,10 @@ def main(argv: list[str]|None = None) -> int:
 
     # Build config
     config = build_config(args)
-    _dump_model_source_urls(config.prefill_urls, config.decode_urls)
+    _dump_model_source_urls(
+        config.prefill_worker_config.urls,
+        config.decode_worker_config.urls,
+    )
 
     init_logging(args.log_level)
 
@@ -337,8 +339,8 @@ def main(argv: list[str]|None = None) -> int:
     output_addr, input_addr = _get_zmq_addresses()
 
     # Select engine based on router_type and pd_disaggregation
-    if config.pd_disaggregation:
-        if config.router_type == "sglang":
+    if config.router_mode_config.pd_disaggregation:
+        if config.router_mode_config.router_type == "sglang":
             engine_target = start_sglang_engine
         else:
             engine_target = start_engine

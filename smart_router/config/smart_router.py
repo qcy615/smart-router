@@ -1,46 +1,22 @@
 from dataclasses import dataclass, field
-from smart_router.config.worker import HealthConfig
+from smart_router.config.k8s import K8SDiscoveryConfig
+from smart_router.config.kv_events import KVEventsConfig
 from smart_router.config.policy import PolicyConfig
-from typing import List, Optional
+from smart_router.config.router import RouterModeConfig
+from smart_router.config.tokenization import TokenizationConfig
+from smart_router.config.upstream_http import UpstreamHTTPClientConfig
+from smart_router.config.worker import HealthConfig, WorkerGroupConfig
+from typing import Optional
 from argparse import Namespace
 
 
 @dataclass
-class K8SDiscoveryConfig:
-    enabled: bool = False
-    prefill_port: Optional[int] = None
-    decode_port: Optional[int] = None
-    regular_port: Optional[int] = None
-    namespace: Optional[str] = None
-    task_label_key: str = "task_id"
-    task_id: Optional[str] = None
-    url_scheme: str = "http"
-
-@dataclass
-class UpstreamHTTPClientConfig:
-    connect_timeout_secs: float = 5.0
-    read_timeout_secs: Optional[float] = None
-    write_timeout_secs: float = 30.0
-    pool_timeout_secs: float = 1.0
-    max_connections: int = 1024
-    max_keepalive_connections: int = 256
-    keepalive_expiry_secs: float = 30.0
-
-@dataclass
 class SmartRouterConfig:
-    router_type: str = "vllm"
-    pd_disaggregation: bool = False  # Enable PD disaggregated mode
-
-    worker_urls: List[str] = None
-    worker_intra_dp_size: int = 1
+    router_mode_config: RouterModeConfig = field(default_factory=RouterModeConfig)
+    worker_config: WorkerGroupConfig = field(default_factory=WorkerGroupConfig)
+    prefill_worker_config: WorkerGroupConfig = field(default_factory=WorkerGroupConfig)
+    decode_worker_config: WorkerGroupConfig = field(default_factory=WorkerGroupConfig)
     policy_config: PolicyConfig = field(default_factory=PolicyConfig)
-
-    prefill_urls: List[str] = None
-    prefill_intra_dp_size: int = 1
-    prefill_bootstrap_ports: List[int] = None
-
-    decode_urls: List[str] = None
-    decode_intra_dp_size: int = 1
 
     health_config: HealthConfig = field(default_factory=HealthConfig)
     k8s_discovery_config: K8SDiscoveryConfig = field(default_factory=K8SDiscoveryConfig)
@@ -51,17 +27,8 @@ class SmartRouterConfig:
     prefill_policy_config: PolicyConfig = field(default_factory=PolicyConfig)
     decode_policy_config: PolicyConfig = field(default_factory=PolicyConfig)
 
-    kv_events_enabled: bool = False
-    kv_events_port: int = 5557
-    kv_events_topic: str = ""
-    kv_events_endpoints: Optional[List[str]] = None
-
-    tokenizer: Optional[str] = None
-    tokenizer_trust_remote_code: bool = False
-    tokenize_url: Optional[str] = None
-    tokenize_timeout: float = 10.0
-    tokenize_cache_size: int = 4096
-    tokenize_cache_ttl: float = 3600.0
+    kv_events_config: KVEventsConfig = field(default_factory=KVEventsConfig)
+    tokenization_config: TokenizationConfig = field(default_factory=TokenizationConfig)
 
 
 def _validate_k8s_discovery_config(
@@ -125,6 +92,11 @@ def build_config(args: Namespace) -> SmartRouterConfig:
     """
     Build smart router config from args.
     """
+    router_mode_config = RouterModeConfig(
+        router_type=args.router_type,
+        pd_disaggregation=args.pd_disaggregation,
+    )
+
     decode_policy_config = None
     if args.decode_policy != "":
         decode_policy_config: PolicyConfig = PolicyConfig(
@@ -172,7 +144,7 @@ def build_config(args: Namespace) -> SmartRouterConfig:
     )
     _validate_k8s_discovery_config(
         k8s_discovery_config,
-        pd_disaggregation=args.pd_disaggregation,
+        pd_disaggregation=router_mode_config.pd_disaggregation,
     )
 
     upstream_http_client_config = UpstreamHTTPClientConfig(
@@ -191,15 +163,20 @@ def build_config(args: Namespace) -> SmartRouterConfig:
     _validate_upstream_http_client_config(upstream_http_client_config)
 
     return SmartRouterConfig(
-        router_type=args.router_type,
-        pd_disaggregation=args.pd_disaggregation,
-        worker_urls=args.worker_urls,
-        worker_intra_dp_size=args.worker_intra_dp_size,
-        prefill_urls=args.prefill_urls,
-        prefill_intra_dp_size=args.prefill_intra_dp_size,
-        prefill_bootstrap_ports=getattr(args, "prefill_bootstrap_ports", None),
-        decode_urls=args.decode_urls, 
-        decode_intra_dp_size=args.decode_intra_dp_size,
+        router_mode_config=router_mode_config,
+        worker_config=WorkerGroupConfig(
+            urls=args.worker_urls,
+            intra_dp_size=args.worker_intra_dp_size,
+        ),
+        prefill_worker_config=WorkerGroupConfig(
+            urls=args.prefill_urls,
+            intra_dp_size=args.prefill_intra_dp_size,
+            bootstrap_ports=getattr(args, "prefill_bootstrap_ports", None),
+        ),
+        decode_worker_config=WorkerGroupConfig(
+            urls=args.decode_urls,
+            intra_dp_size=args.decode_intra_dp_size,
+        ),
         health_config=HealthConfig(
             check_interval_secs=getattr(args, "health_check_interval", 60),
         ),
@@ -208,15 +185,19 @@ def build_config(args: Namespace) -> SmartRouterConfig:
         decode_policy_config=decode_policy_config if decode_policy_config else policy_config,
         prefill_policy_config=prefill_policy_config if prefill_policy_config else policy_config,
         policy_config=policy_config,
-        kv_events_enabled=getattr(args, "kv_events_enabled", False),
-        kv_events_port=getattr(args, "kv_events_port", 5557),
-        kv_events_topic=getattr(args, "kv_events_topic", ""),
-        kv_events_endpoints=getattr(args, "kv_events_endpoints", None),
-        tokenizer=getattr(args, "tokenizer", None),
-        tokenizer_trust_remote_code=getattr(
-            args, "tokenizer_trust_remote_code", False),
-        tokenize_url=getattr(args, "tokenize_url", None),
-        tokenize_timeout=getattr(args, "tokenize_timeout", 10.0),
-        tokenize_cache_size=getattr(args, "tokenize_cache_size", 4096),
-        tokenize_cache_ttl=getattr(args, "tokenize_cache_ttl", 3600.0),
+        kv_events_config=KVEventsConfig(
+            enabled=getattr(args, "kv_events_enabled", False),
+            port=getattr(args, "kv_events_port", 5557),
+            topic=getattr(args, "kv_events_topic", ""),
+            endpoints=getattr(args, "kv_events_endpoints", None),
+        ),
+        tokenization_config=TokenizationConfig(
+            tokenizer=getattr(args, "tokenizer", None),
+            tokenizer_trust_remote_code=getattr(
+                args, "tokenizer_trust_remote_code", False),
+            tokenize_url=getattr(args, "tokenize_url", None),
+            tokenize_timeout=getattr(args, "tokenize_timeout", 10.0),
+            tokenize_cache_size=getattr(args, "tokenize_cache_size", 4096),
+            tokenize_cache_ttl=getattr(args, "tokenize_cache_ttl", 3600.0),
+        ),
     )

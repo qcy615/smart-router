@@ -8,7 +8,7 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 
-from smart_router.config.smart_router import UpstreamHTTPClientConfig
+from smart_router.config.upstream_http import UpstreamHTTPClientConfig
 from smart_router.engine.engine import EngineRequest, EngineResponse, RequestType
 from smart_router.entrypoints.serve.http_client import build_upstream_http_client
 

@@ -119,8 +119,10 @@ def _decode_msgpack(payload: bytes):
 def build_worker_event_endpoints(
         config: SmartRouterConfig,
         workers: Iterable["Worker"]) -> list[WorkerEventEndpoint]:
+    kv_events_config = config.kv_events_config
     explicit, base_endpoints = _parse_explicit_endpoints(
-        config.kv_events_endpoints)
+        kv_events_config.endpoints)
+    topic = kv_events_config.topic
     endpoints: list[WorkerEventEndpoint] = []
     seen: set[str] = set()
     base_url_to_index: dict[str, int] = {}
@@ -159,7 +161,7 @@ def build_worker_event_endpoints(
         endpoints.append(
             WorkerEventEndpoint(worker_id=worker_id,
                                 endpoint=endpoint,
-                                topic=config.kv_events_topic))
+                                topic=topic))
 
     return endpoints
 
@@ -170,7 +172,7 @@ def _derive_endpoint(config: SmartRouterConfig, worker: "Worker") -> str:
     if host in {"0.0.0.0", "*", "::"}:
         host = "127.0.0.1"
     rank_offset = worker.dp_rank() if worker.dp_rank() > 0 else 0
-    port = config.kv_events_port + rank_offset
+    port = config.kv_events_config.port + rank_offset
     return f"tcp://{host}:{port}"
 
 

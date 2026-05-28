@@ -37,11 +37,11 @@ class VLLMEngine(Engine):
         self.kv_event_subscriber: Optional[KVEventSubscriber] = None
 
         # Initialize prefill workers.
-        for url in config.prefill_urls or []:
+        for url in config.prefill_worker_config.urls or []:
             register_workers_for_url(self.worker_registry, url, WorkerType.PREFILL, config)
 
         # Initialize decode workers.
-        for url in config.decode_urls or []:
+        for url in config.decode_worker_config.urls or []:
             register_workers_for_url(self.worker_registry, url, WorkerType.DECODE, config)
 
         self.configure_worker_discovery(config)
@@ -129,7 +129,7 @@ class VLLMEngine(Engine):
             if self.worker_discovery is not None:
                 await self.worker_discovery.sync_once()
 
-            if self.config.kv_events_enabled:
+            if self.config.kv_events_config.enabled:
                 endpoint_map = build_worker_event_endpoints(
                     self.config,
                     self.worker_registry.get_all(),

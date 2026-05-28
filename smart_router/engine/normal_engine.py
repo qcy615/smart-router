@@ -35,7 +35,7 @@ class NormalEngine(Engine):
         self.policy: Policy = get_policy_config(config.policy_config)
 
         # Initialize regular workers.
-        for url in config.worker_urls or []:
+        for url in config.worker_config.urls or []:
             register_workers_for_url(self.worker_registry, url, WorkerType.REGULAR, config)
 
         self.configure_worker_discovery(config)

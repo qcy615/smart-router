@@ -7,25 +7,16 @@ import hashlib
 import json
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
 from typing import Any, Optional
+
+from smart_router.config.tokenization import TokenizationConfig
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class RouterTokenizerConfig:
-    tokenizer: Optional[str] = None
-    trust_remote_code: bool = False
-    tokenize_url: Optional[str] = None
-    tokenize_timeout: float = 10.0
-    tokenize_cache_size: int = 4096
-    tokenize_cache_ttl: float = 3600.0
-
-
 class RouterTokenizerManager:
-    def __init__(self, config: Optional[RouterTokenizerConfig] = None) -> None:
-        self.config = config or RouterTokenizerConfig()
+    def __init__(self, config: Optional[TokenizationConfig] = None) -> None:
+        self.config = config or TokenizationConfig()
         self._tokenizers: dict[str, Any] = {}
         self._http_client: Optional[Any] = None
         self._cache: OrderedDict[str, tuple[float, list[int]]] = OrderedDict()
@@ -37,9 +28,9 @@ class RouterTokenizerManager:
         trust_remote_code = os.getenv(
             "SMART_ROUTER_TOKENIZER_TRUST_REMOTE_CODE", "").lower()
         return cls(
-            RouterTokenizerConfig(
+            TokenizationConfig(
                 tokenizer=os.getenv("SMART_ROUTER_TOKENIZER") or None,
-                trust_remote_code=trust_remote_code in {"1", "true", "yes"},
+                tokenizer_trust_remote_code=trust_remote_code in {"1", "true", "yes"},
                 tokenize_url=os.getenv("SMART_ROUTER_TOKENIZE_URL") or None,
                 tokenize_cache_size=int(
                     os.getenv("SMART_ROUTER_TOKENIZE_CACHE_SIZE", "4096")),
@@ -317,7 +308,7 @@ class RouterTokenizerManager:
 
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name,
-            trust_remote_code=self.config.trust_remote_code,
+            trust_remote_code=self.config.tokenizer_trust_remote_code,
         )
         self._tokenizers[tokenizer_name] = tokenizer
         logger.info("Loaded router tokenizer: %s", tokenizer_name)

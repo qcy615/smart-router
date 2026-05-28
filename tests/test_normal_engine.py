@@ -1,6 +1,6 @@
 import asyncio
 
-from smart_router.config import SmartRouterConfig
+from smart_router.config import SmartRouterConfig, WorkerGroupConfig
 from smart_router.engine.engine import Engine, EngineRequest, RequestType
 from smart_router.engine.normal_engine import NormalEngine
 from smart_router.worker import BasicWorker, WorkerRegistry, WorkerType
@@ -10,7 +10,7 @@ def test_normal_engine_allows_missing_worker_urls(monkeypatch):
     monkeypatch.setattr(Engine, "__init__", lambda self, **kwargs: None)
 
     engine = NormalEngine(
-        SmartRouterConfig(worker_urls=None),
+        SmartRouterConfig(worker_config=WorkerGroupConfig(urls=None)),
         input_socket_address="tcp://127.0.0.1:5557",
         output_socket_address="tcp://127.0.0.1:5558",
     )
@@ -23,7 +23,7 @@ def test_normal_engine_schedule_loop_returns_error_when_no_healthy_worker():
         def __init__(self):
             self.waiting_queue = asyncio.Queue()
             self.sent = []
-            self.config = SmartRouterConfig(worker_urls=[])
+            self.config = SmartRouterConfig(worker_config=WorkerGroupConfig(urls=[]))
             self.worker_registry = WorkerRegistry()
             self.policy = None
 

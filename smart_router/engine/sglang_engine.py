@@ -36,11 +36,11 @@ class SglangEngine(Engine):
         self.decode_policy: Policy = get_policy_config(config.decode_policy_config)
 
         # Initialize prefill workers.
-        for url in config.prefill_urls or []:
+        for url in config.prefill_worker_config.urls or []:
             register_workers_for_url(self.worker_registry, url, WorkerType.PREFILL, config)
 
         # Initialize decode workers.
-        for url in config.decode_urls or []:
+        for url in config.decode_worker_config.urls or []:
             register_workers_for_url(self.worker_registry, url, WorkerType.DECODE, config)
 
         self.configure_worker_discovery(config)
