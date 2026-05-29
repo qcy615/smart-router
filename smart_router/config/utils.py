@@ -219,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     prefill_group.add_argument("--prefill-balance-rel-threshold", type=float, default=0.1, action=_StoreExplicitAction, help="The relative balance threshold for prefix-aware policy for prefill.")
     prefill_group.add_argument("--prefill-prefix-cache-eviction-threshold-chars", type=int, default=2_000_000, action=_StoreExplicitAction, help="Per-prefill-worker prefix tree character high watermark for prefix-aware policy. Set <= 0 to disable eviction.")
     prefill_group.add_argument("--prefill-prefix-cache-eviction-target-chars", type=int, default=1_600_000, action=_StoreExplicitAction, help="Per-prefill-worker prefix tree character target after eviction for prefix-aware policy.")
-    prefill_group.add_argument("--prefill-prefix-cache-eviction-interval-secs", type=float, default=30.0, action=_StoreExplicitAction, help="Seconds between prefill prefix-aware tree eviction checks.")
+    prefill_group.add_argument("--prefill-prefix-cache-eviction-interval-secs", type=float, default=120.0, action=_StoreExplicitAction, help="Seconds between prefill prefix-aware tree eviction checks.")
 
     decode_group = parser.add_argument_group("Decode workers")
     decode_group.add_argument("--decode-urls", nargs="+")
@@ -230,7 +230,7 @@ def build_parser() -> argparse.ArgumentParser:
     decode_group.add_argument("--decode-balance-rel-threshold", type=float, default=0.1, action=_StoreExplicitAction, help="The relative balance threshold for prefix-aware policy for decode.")
     decode_group.add_argument("--decode-prefix-cache-eviction-threshold-chars", type=int, default=2_000_000, action=_StoreExplicitAction, help="Per-decode-worker prefix tree character high watermark for prefix-aware policy. Set <= 0 to disable eviction.")
     decode_group.add_argument("--decode-prefix-cache-eviction-target-chars", type=int, default=1_600_000, action=_StoreExplicitAction, help="Per-decode-worker prefix tree character target after eviction for prefix-aware policy.")
-    decode_group.add_argument("--decode-prefix-cache-eviction-interval-secs", type=float, default=30.0, action=_StoreExplicitAction, help="Seconds between decode prefix-aware tree eviction checks.")
+    decode_group.add_argument("--decode-prefix-cache-eviction-interval-secs", type=float, default=120.0, action=_StoreExplicitAction, help="Seconds between decode prefix-aware tree eviction checks.")
 
     kv_events_group = parser.add_argument_group("KV cache events")
     kv_events_group.add_argument(
